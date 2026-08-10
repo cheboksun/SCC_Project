@@ -1,0 +1,86 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String?
+  createdAt    DateTime @default(now())
+
+  chapters   Chapter[]
+  bookmarks  Bookmark[]
+  replays    ReplayLog[]
+  quizzes    QuizAttempt[]
+  settings   UserSettings?
+}
+
+// 교과서 단원. 기본 제공 단원(seed)과 사용자가 촬영해서 추가한 단원을 함께 다룸.
+model Chapter {
+  id          String   @id @default(cuid())
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String?
+  slug        String   // 예: "ch1", "custom17" — 사용자별로 유니크
+  title       String
+  subject     String?  // 수학/국어/영어/사회/과학
+  bodyText    String
+  source      String   @default("seed") // seed | ocr | manual
+  orderIndex  Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  bookmarks Bookmark[]
+  replays   ReplayLog[]
+  quizzes   QuizAttempt[]
+
+  @@unique([userId, slug])
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  chapter   Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  chapterId String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, chapterId])
+}
+
+// 같은 단원을 몇 번 다시 들었는지 — "이해 어려움" 신호로 재설명 트리거에 사용
+model ReplayLog {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  chapter   Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  chapterId String
+  playedAt  DateTime @default(now())
+}
+
+model QuizAttempt {
+  id         String   @id @default(cuid())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  chapter    Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  chapterId  String
+  question   String
+  answer     String
+  isCorrect  Boolean?
+  feedback   String?
+  createdAt  DateTime @default(now())
+}
+
+model UserSettings {
+  id             String  @id @default(cuid())
+  user           User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String  @unique
+  outputMode     String  @default("sound") // sound | both | vibe
+  speechRate     Float   @default(1.0)
+  highContrast   Boolean @default(false)
+  fontZoom       Float   @default(1.0)
+}
