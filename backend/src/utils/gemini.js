@@ -2,11 +2,19 @@
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
 
+// Gemini가 "high demand"일 때 응답을 아예 안 주고 무한정 멈추는 경우가 있어서
+// (수 분 이상 응답 없음 확인됨), 타임아웃 없이 fetch만 걸어두면 사용자 화면이
+// 로딩 상태로 영원히 멈춰버린다. 45초를 넘기면 명확한 에러로 실패시킨다.
+const GEMINI_TIMEOUT_MS = 45000;
+
 async function callGeminiParts(systemPrompt, parts) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("서버에 GEMINI_API_KEY가 설정되어 있지 않아요");
   }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
 
   let response;
   try {
@@ -20,9 +28,15 @@ async function callGeminiParts(systemPrompt, parts) {
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts }],
       }),
+      signal: controller.signal,
     });
   } catch (networkErr) {
+    if (networkErr.name === "AbortError") {
+      throw new Error("AI 응답이 너무 오래 걸려서 중단했어요 (지금 요청이 많이 몰린 것 같아요). 잠시 후 다시 시도해 주세요");
+    }
     throw new Error("AI 서버 네트워크 요청 실패: " + networkErr.message);
+  } finally {
+    clearTimeout(timer);
   }
 
   let data;
