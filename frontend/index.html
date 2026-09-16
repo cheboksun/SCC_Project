@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
 <title>같이보는 교과서</title>
+<link rel="stylesheet" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -20,39 +21,10 @@
   </div>
   <div class="header-actions">
     <span class="status-pill" id="modeIndicator">소리+진동</span>
-    <span class="user-chip" id="userChip" hidden>
-      <span id="userChipName"></span>
-      <button id="logoutBtn" type="button">로그아웃</button>
-    </span>
   </div>
 </header>
 
-<!-- 로그인 / 회원가입 -->
-<div class="auth-screen" id="authScreen">
-  <div class="auth-card">
-    <h2 id="authTitle">로그인</h2>
-    <p class="lead" id="authLead">같이보는 교과서에 오신 걸 환영해요</p>
-    <form id="authForm">
-      <div class="field" id="displayNameField" hidden>
-        <label for="authDisplayName">이름 (선택)</label>
-        <input id="authDisplayName" type="text" autocomplete="name" placeholder="예: 홍길동">
-      </div>
-      <div class="field">
-        <label for="authEmail">이메일</label>
-        <input id="authEmail" type="email" required autocomplete="email" placeholder="you@example.com">
-      </div>
-      <div class="field">
-        <label for="authPassword">비밀번호</label>
-        <input id="authPassword" type="password" required autocomplete="current-password" minlength="8" placeholder="8자 이상">
-      </div>
-      <button class="btn" type="submit" id="authSubmitBtn">로그인</button>
-    </form>
-    <div class="switch"><button type="button" id="authSwitchBtn">계정이 없으신가요? 회원가입</button></div>
-    <div class="error" id="authError" role="alert"></div>
-  </div>
-</div>
-
-<!-- 로그인 후 메인 화면 -->
+<!-- 메인 화면 -->
 <div id="appScreen" hidden>
 
 <!-- 화면 접근성 설정 -->
@@ -64,31 +36,37 @@
     <button class="icon-btn" id="contrastToggleBtn" aria-pressed="false" aria-label="고대비 모드 전환">고대비</button>
     <button class="icon-btn" id="alwaysListenBtn" aria-pressed="false" aria-label="항상 듣기 모드 전환">🎙 항상 듣기: 꺼짐</button>
   </div>
-  <div style="margin-top:12px;">
+  <div class="rate-row">
     <label for="rateSlider">읽는 속도</label>
-    <input type="range" id="rateSlider" min="0.6" max="1.8" step="0.1" value="1.0" style="width:100%;" aria-label="음성 읽는 속도 조절">
+    <input type="range" id="rateSlider" class="rate-slider" min="0.6" max="1.8" step="0.1" value="1.0" aria-label="음성 읽는 속도 조절">
   </div>
   <div class="guide-line" id="alwaysListenStatus"></div>
 </div>
 
 <!-- 촬영 -->
 <section class="panel camera-card" aria-label="교과서 페이지 촬영">
-  <span class="title" style="text-align:left;display:block;">1. 페이지 찍기</span>
+  <span class="title">1. 페이지 찍기</span>
   <div class="guide-line" id="guideLine" aria-live="polite">카메라를 켜고 교과서 위에 갖다 대면 안내가 시작돼요.</div>
 
-  <video id="cameraVideo" playsinline autoplay muted
-         style="width:100%;max-height:260px;border-radius:10px;margin-top:10px;display:none;background:#000;"></video>
-  <canvas id="captureCanvas" style="display:none;"></canvas>
+  <video id="cameraVideo" class="video-preview" playsinline autoplay muted></video>
+  <canvas id="captureCanvas" class="capture-canvas"></canvas>
 
-  <button class="shutter" id="cameraStartBtn">카메라 켜기 (웹에서 직접)</button>
-  <button class="shutter" id="fileCaptureBtn" style="background:var(--surface-2);color:var(--text);">📱 사진 앱으로 찍기 (더 잘 됨)</button>
-  <input type="file" id="fileCaptureInput" accept="image/*" capture="environment" style="display:none;">
-  <button class="shutter" id="shutterBtn" style="display:none;background:var(--focus);">📸 촬영하기</button>
+  <div class="camera-actions">
+    <button class="shutter" id="cameraStartBtn">카메라 켜기 (웹에서 직접)</button>
+    <button class="shutter secondary" id="fileCaptureBtn">📱 사진 앱으로 찍기 (더 잘 됨)</button>
+    <input type="file" id="fileCaptureInput" accept="image/*" capture="environment" hidden>
+    <button class="shutter capture" id="shutterBtn" style="display:none;">📸 촬영하기</button>
+  </div>
 
-  <div id="ocrResultBox" style="display:none;text-align:left;margin-top:14px;background:var(--surface-2);border-radius:10px;padding:12px;">
-    <span class="eyebrow" style="display:block;margin-bottom:6px;">인식된 내용 (수정 가능)</span>
-    <textarea id="ocrResultText" rows="4" style="width:100%;background:var(--surface);color:var(--text);border:1px solid var(--surface-border);border-radius:8px;padding:10px;font-size:14px;"></textarea>
-    <div id="subjectBox" style="margin-top:10px;font-size:13px;color:var(--text-dim);"></div>
+  <div id="ocrResultBox" class="ocr-box">
+    <span class="eyebrow">인식된 내용 (AI가 읽어드려요, 필요하면 수정 가능)</span>
+    <textarea id="ocrResultText" class="ocr-textarea" rows="4"></textarea>
+    <div id="visualDescBox" class="visual-desc" aria-live="polite"></div>
+    <div id="subjectBox" class="subject-line"></div>
+    <div class="row-actions" style="margin-top:10px;">
+      <button class="icon-btn" id="ocrReplayBtn">🔊 다시 들려주기</button>
+      <button class="icon-btn" id="ocrRetakeBtn">🔄 이상해요, 다시 촬영</button>
+    </div>
     <button class="icon-btn" id="addOcrChapterBtn" style="margin-top:8px;">✅ 교과서에 이 내용 추가하기</button>
   </div>
 </section>
@@ -111,7 +89,7 @@
     <button data-mode="both" aria-pressed="false">소리+진동</button>
     <button data-mode="vibe" aria-pressed="false">진동만(화면리더용)</button>
   </div>
-  <p style="font-size:12px;color:var(--text-dim);margin:10px 0 0;line-height:1.5;">
+  <p class="hint-text">
     💡 보이스오버·톡백 같은 화면리더를 켜고 쓰신다면 <strong>'진동만(화면리더용)'</strong>을 골라주세요.
     화면리더가 이미 화면 내용을 다 읽어주기 때문에, 저희 앱 음성까지 같이 나오면 두 목소리가 겹쳐 들려요.
   </p>
@@ -147,15 +125,25 @@
 <div class="panel" aria-label="이해도 확인 퀴즈">
   <label for="quizAnswerInput">🧠 방금 배운 내용, 이해했는지 확인해보기</label>
   <div class="field-row">
-    <button id="quizStartBtn" class="btn" style="flex:1;">퀴즈 내기</button>
+    <button id="quizStartBtn" class="btn" style="width:100%;">퀴즈 내기</button>
   </div>
   <div class="guide-line" id="quizQuestionBox" aria-live="polite"></div>
-  <div class="field-row" id="quizAnswerRow" style="display:none;margin-top:8px;">
+  <div class="field-row quiz-answer-row" id="quizAnswerRow">
     <input id="quizAnswerInput" type="text" placeholder="정답을 입력하세요" aria-label="퀴즈 정답 입력">
     <button id="quizMicBtn" class="btn btn-secondary" aria-label="음성으로 정답 입력">🎤</button>
     <button id="quizCheckBtn" class="btn">정답 확인</button>
   </div>
   <div class="guide-line" id="quizFeedback" aria-live="polite"></div>
+</div>
+
+<!-- 보호자/교사용 학습 리포트 -->
+<div class="panel" aria-label="보호자 교사용 학습 리포트">
+  <span class="title">📊 학습 리포트 (보호자·교사용)</span>
+  <div class="row-actions">
+    <button class="icon-btn" id="reportLoadBtn">리포트 불러오기</button>
+    <button class="icon-btn" id="reportSpeakBtn" style="display:none;">🔊 리포트 읽어주기</button>
+  </div>
+  <div id="reportBox" class="report-box" aria-live="polite"></div>
 </div>
 
 <!-- 단원 상세 (JS가 채움) -->
@@ -175,7 +163,6 @@
 
 </div><!-- /appScreen -->
 
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="config.js"></script>
 <script src="api.js"></script>
 <script src="app.js"></script>

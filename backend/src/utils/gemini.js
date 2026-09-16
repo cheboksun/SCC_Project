@@ -2,7 +2,7 @@
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
 
-async function callGemini(systemPrompt, userPrompt) {
+async function callGeminiParts(systemPrompt, parts) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("서버에 GEMINI_API_KEY가 설정되어 있지 않아요");
@@ -18,7 +18,7 @@ async function callGemini(systemPrompt, userPrompt) {
       },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        contents: [{ role: "user", parts }],
       }),
     });
   } catch (networkErr) {
@@ -41,12 +41,24 @@ async function callGemini(systemPrompt, userPrompt) {
   if (!candidate) {
     throw new Error("AI가 답을 생성하지 못했어요");
   }
-  const parts = candidate.content && candidate.content.parts ? candidate.content.parts : [];
-  const text = parts.map((p) => p.text || "").join(" ").trim();
+  const responseParts = candidate.content && candidate.content.parts ? candidate.content.parts : [];
+  const text = responseParts.map((p) => p.text || "").join(" ").trim();
   if (!text) {
     throw new Error("AI가 빈 응답을 반환했어요 (finishReason: " + (candidate.finishReason || "?") + ")");
   }
   return text;
 }
 
-module.exports = { callGemini };
+async function callGemini(systemPrompt, userPrompt) {
+  return callGeminiParts(systemPrompt, [{ text: userPrompt }]);
+}
+
+// 촬영한 교과서 페이지 이미지를 직접 보고 텍스트/과목/그림 설명을 뽑아낼 때 사용
+async function callGeminiVision(systemPrompt, userPrompt, imageBase64, mimeType) {
+  return callGeminiParts(systemPrompt, [
+    { text: userPrompt },
+    { inlineData: { mimeType: mimeType || "image/jpeg", data: imageBase64 } },
+  ]);
+}
+
+module.exports = { callGemini, callGeminiVision };

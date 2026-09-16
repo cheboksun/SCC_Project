@@ -160,6 +160,7 @@ const SPECIAL_BY_SLUG = {
   function renderTocCard(chapter) {
     const btn = document.createElement("button");
     btn.dataset.id = chapter.id;
+    btn.dataset.subject = chapter.subject || "";
     btn.setAttribute("aria-current", "false");
     btn.innerHTML = `
       <span class="card-subject">${chapter.subject || (chapter.source === "ocr" ? "촬영" : "")}</span>
@@ -175,6 +176,7 @@ const SPECIAL_BY_SLUG = {
     section.id = "chapter-" + chapter.id;
     section.tabIndex = -1;
     section.dataset.id = chapter.id;
+    section.dataset.subject = chapter.subject || "";
 
     const bookmarked = state.bookmarkIds.has(chapter.id);
     let extra = "";
@@ -399,7 +401,7 @@ const SPECIAL_BY_SLUG = {
     });
   });
 
-  // ---- 촬영 -> OCR -> 백엔드에 단원으로 추가 ----
+  // ---- 촬영 -> Gemini Vision으로 직접 읽기 -> 백엔드에 단원으로 추가 ----
   const guideLine = $("guideLine");
   const cameraVideo = $("cameraVideo");
   const captureCanvas = $("captureCanvas");
@@ -407,10 +409,36 @@ const SPECIAL_BY_SLUG = {
   const shutterBtn = $("shutterBtn");
   const ocrResultBox = $("ocrResultBox");
   const ocrResultText = $("ocrResultText");
+  const visualDescBox = $("visualDescBox");
   const subjectBox = $("subjectBox");
   let mediaStream = null;
   let detectedSubject = null;
+  let lastVisualDescription = null;
   const SUBJECT_LIST = ["수학", "국어", "영어", "사회", "과학"];
+
+  // 사진을 그대로 보내면 용량이 크니, 인식에 충분한 크기로 줄여서 base64로 만듦
+  async function imageSourceToResizedBase64(source) {
+    const srcW = source.naturalWidth || source.width;
+    const srcH = source.naturalHeight || source.height;
+    const MAX_W = 1400;
+    const scale = Math.min(1, MAX_W / srcW);
+    const w = Math.max(1, Math.round(srcW * scale));
+    const h = Math.max(1, Math.round(srcH * scale));
+    const out = document.createElement("canvas");
+    out.width = w; out.height = h;
+    out.getContext("2d").drawImage(source, 0, 0, w, h);
+    const dataUrl = out.toDataURL("image/jpeg", 0.85);
+    return dataUrl.split(",")[1];
+  }
+
+  function loadImageFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(img.src); resolve(img); };
+      img.onerror = reject;
+      img.src = URL.createObjectURL(file);
+    });
+  }
 
   const fileCaptureBtn = $("fileCaptureBtn");
   const fileCaptureInput = $("fileCaptureInput");
@@ -418,7 +446,12 @@ const SPECIAL_BY_SLUG = {
   fileCaptureInput.addEventListener("change", async () => {
     const file = fileCaptureInput.files[0];
     if (!file) return;
-    await runOcr(file);
+    try {
+      const img = await loadImageFromFile(file);
+      await runOcr(img);
+    } catch (e) {
+      showToast("이미지를 불러오지 못했어요");
+    }
     fileCaptureInput.value = "";
   });
 
@@ -456,55 +489,82 @@ const SPECIAL_BY_SLUG = {
   });
 
   async function runOcr(source) {
-    guideLine.textContent = "글자를 읽는 중... (몇 초 걸릴 수 있어요)";
-    speak("글자를 읽는 중이에요. 잠시만 기다려 주세요.");
+    guideLine.textContent = "AI가 페이지를 읽는 중... (몇 초 걸릴 수 있어요)";
+    speak("AI가 페이지를 읽는 중이에요. 잠시만 기다려 주세요.");
+    ocrResultBox.style.display = "none";
+    visualDescBox.style.display = "none";
+    lastVisualDescription = null;
     try {
-      const { data: { text } } = await Tesseract.recognize(source, "kor+eng");
-      const cleaned = text.replace(/\n{2,}/g, "\n").trim();
-      ocrResultText.value = cleaned || "";
+      const base64 = await imageSourceToResizedBase64(source);
+      const { text, subject, visualDescription } = await VoxAPI.aiOcr(base64, "image/jpeg");
+      const cleaned = (text || "").trim();
+      ocrResultText.value = cleaned;
       ocrResultBox.style.display = "block";
-      if (cleaned) detectSubject(cleaned);
-      guideLine.textContent = cleaned
-        ? "글자를 인식했어요. 아래에서 확인하고 추가해 주세요."
-        : "글자를 잘 못 읽었어요. 다시 찍거나 직접 수정해 주세요.";
-      speak(cleaned ? "글자를 인식했어요. 확인 후 추가해 주세요." : "글자를 잘 못 읽었어요.");
+      lastVisualDescription = visualDescription || null;
+      if (lastVisualDescription) {
+        visualDescBox.textContent = "🖼 이 페이지의 그림/표: " + lastVisualDescription;
+        visualDescBox.style.display = "block";
+      }
+      renderSubjectChips(subject || null);
+
+      if (cleaned) {
+        guideLine.textContent = "글자를 인식했어요. 읽어드릴게요.";
+        let toSpeak = "이렇게 인식했어요. " + cleaned;
+        if (lastVisualDescription) toSpeak += " 그리고 이 페이지에는 그림이나 표가 있어요. " + lastVisualDescription;
+        toSpeak += " 내용이 맞으면 추가하기 버튼을, 이상하면 다시 촬영 버튼을 눌러주세요.";
+        speak(toSpeak);
+      } else {
+        guideLine.textContent = "글자를 잘 못 읽었어요. 다시 찍거나 직접 수정해 주세요.";
+        speak("글자를 잘 못 읽었어요. 다시 촬영해 주세요.");
+      }
       vibrate([20, 40, 20, 40, 60]);
     } catch (err) {
-      guideLine.textContent = "인식에 실패했어요. 다시 시도해 주세요.";
+      guideLine.textContent = "인식에 실패했어요: " + err.message;
+      speak("인식에 실패했어요. 다시 시도해 주세요.");
       vibrate(200);
     }
   }
 
+  $("ocrReplayBtn").addEventListener("click", () => {
+    const cleaned = ocrResultText.value.trim();
+    if (!cleaned) { showToast("들려줄 내용이 없어요"); return; }
+    let toSpeak = cleaned;
+    if (lastVisualDescription) toSpeak += " 그리고 " + lastVisualDescription;
+    speak(toSpeak);
+  });
+
+  $("ocrRetakeBtn").addEventListener("click", () => {
+    ocrResultBox.style.display = "none";
+    visualDescBox.style.display = "none";
+    ocrResultText.value = "";
+    lastVisualDescription = null;
+    detectedSubject = null;
+    subjectBox.innerHTML = "";
+    guideLine.textContent = "다시 촬영해 주세요.";
+    speak("다시 촬영해 주세요.");
+    vibrate(20);
+  });
+
   function renderSubjectChips(current) {
     detectedSubject = current;
     const chips = SUBJECT_LIST.map(
-      (s) => `<button type="button" class="icon-btn subject-chip" data-subject="${s}" style="${s === current ? "background:var(--accent-dim);color:var(--accent);border-color:var(--accent);" : ""}">${s}</button>`
+      (s) => `<button type="button" class="icon-btn subject-chip${s === current ? " selected" : ""}" data-subject="${s}">${s}</button>`
     ).join(" ");
     subjectBox.innerHTML = `AI가 분석한 과목: <strong>${current || "판단 중..."}</strong><br>
-      <span style="display:block;margin:6px 0 4px;">다른 과목인가요?</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">${chips}</div>`;
+      <span class="subject-hint">다른 과목인가요?</span>
+      <div class="subject-chips">${chips}</div>`;
     subjectBox.querySelectorAll(".subject-chip").forEach((btn) => {
       btn.addEventListener("click", () => { renderSubjectChips(btn.dataset.subject); vibrate(15); });
     });
   }
 
-  async function detectSubject(text) {
-    subjectBox.innerHTML = `<span style="color:var(--text-dim);">AI가 과목을 분석하는 중...</span>`;
-    try {
-      const subject = await VoxAPI.aiDetectSubject(text);
-      renderSubjectChips(subject);
-    } catch (e) {
-      subjectBox.innerHTML = `<span style="color:var(--text-dim);">과목 분석 실패 — 직접 골라 주세요</span>`;
-      renderSubjectChips(null);
-    }
-  }
-
   $("addOcrChapterBtn").addEventListener("click", async () => {
     const text = ocrResultText.value.trim();
     if (!text) { showToast("내용이 비어있어요"); return; }
+    const fullText = lastVisualDescription ? `${text}\n\n[그림 설명] ${lastVisualDescription}` : text;
     const label = detectedSubject ? `촬영한 내용 [${detectedSubject}]` : "촬영한 내용";
     try {
-      const chapter = await VoxAPI.addChapter(label, detectedSubject, text);
+      const chapter = await VoxAPI.addChapter(label, detectedSubject, fullText);
       state.chapters.push(chapter);
       const tocEl = document.querySelector(".toc.grid-cards");
       const contentEl = $("content");
@@ -514,8 +574,10 @@ const SPECIAL_BY_SLUG = {
       setCurrentChapter(chapter.id);
       vibrate([15, 40, 15, 40, 15]);
       ocrResultBox.style.display = "none";
+      visualDescBox.style.display = "none";
       ocrResultText.value = "";
       detectedSubject = null;
+      lastVisualDescription = null;
       subjectBox.innerHTML = "";
       showToast("교과서에 추가됐어요");
     } catch (e) {
@@ -654,7 +716,7 @@ const SPECIAL_BY_SLUG = {
   let fontZoom = parseFloat(localStorage.getItem("voxbook_fontzoom") || "1.0");
   document.body.style.zoom = fontZoom;
   $("fontIncreaseBtn").addEventListener("click", () => {
-    fontZoom = Math.min(fontZoom + 0.1, 1.8);
+    fontZoom = Math.min(fontZoom + 0.1, 2.2);
     document.body.style.zoom = fontZoom;
     localStorage.setItem("voxbook_fontzoom", fontZoom);
     vibrate(15);
@@ -824,6 +886,64 @@ const SPECIAL_BY_SLUG = {
   }
   quizCheckBtn.addEventListener("click", checkQuizAnswer);
   quizAnswerInput.addEventListener("keydown", (e) => { if (e.key === "Enter") checkQuizAnswer(); });
+
+  // ---- 보호자/교사용 학습 리포트: 단원별 재청취 횟수 + 퀴즈 정답률 ----
+  const reportLoadBtn = $("reportLoadBtn");
+  const reportSpeakBtn = $("reportSpeakBtn");
+  const reportBox = $("reportBox");
+  let lastReportSpeech = "";
+
+  reportLoadBtn.addEventListener("click", async () => {
+    reportBox.innerHTML = `<span style="color:var(--text-dim);font-size:13px;">불러오는 중...</span>`;
+    reportSpeakBtn.style.display = "none";
+    try {
+      const { replayCounts, quizStats } = await VoxAPI.getProgressSummary();
+      const byChapter = {};
+      replayCounts.forEach((r) => {
+        byChapter[r.chapterId] ||= { replay: 0, quizTotal: 0, quizCorrect: 0 };
+        byChapter[r.chapterId].replay = r.count;
+      });
+      quizStats.forEach((q) => {
+        byChapter[q.chapterId] ||= { replay: 0, quizTotal: 0, quizCorrect: 0 };
+        byChapter[q.chapterId].quizTotal = q.total;
+        byChapter[q.chapterId].quizCorrect = q.correct;
+      });
+
+      const rows = Object.entries(byChapter)
+        .map(([chapterId, s]) => ({ chapter: chapterById(chapterId), ...s }))
+        .filter((r) => r.chapter)
+        .sort((a, b) => b.replay - a.replay);
+
+      if (rows.length === 0) {
+        reportBox.innerHTML = `<span style="color:var(--text-dim);font-size:13px;">아직 쌓인 학습 기록이 없어요.</span>`;
+        return;
+      }
+
+      reportBox.innerHTML = rows.map((r) => {
+        const acc = r.quizTotal > 0 ? Math.round((r.quizCorrect / r.quizTotal) * 100) : null;
+        const struggling = r.replay >= 3 || (acc !== null && acc < 50);
+        return `<div style="padding:10px 0;border-top:1px solid var(--surface-border);${struggling ? "color:var(--focus);" : ""}">
+          <strong>${r.chapter.title}</strong><br>
+          <span style="font-size:12.5px;color:var(--text-dim);">
+            다시 듣기 ${r.replay}회 · ${acc !== null ? `퀴즈 정답률 ${acc}% (${r.quizCorrect}/${r.quizTotal})` : "퀴즈 기록 없음"}
+            ${struggling ? " · ⚠ 어려워하는 것 같아요" : ""}
+          </span>
+        </div>`;
+      }).join("");
+
+      lastReportSpeech = "학습 리포트예요. " + rows.map((r) => {
+        const acc = r.quizTotal > 0 ? Math.round((r.quizCorrect / r.quizTotal) * 100) : null;
+        return `${r.chapter.title}, 다시 듣기 ${r.replay}번${acc !== null ? `, 퀴즈 정답률 ${acc}퍼센트` : ""}.`;
+      }).join(" ");
+      reportSpeakBtn.style.display = "inline-flex";
+    } catch (e) {
+      reportBox.innerHTML = `<span style="color:var(--danger);font-size:13px;">불러오기 실패: ${e.message}</span>`;
+    }
+  });
+
+  reportSpeakBtn.addEventListener("click", () => {
+    if (lastReportSpeech) speak(lastReportSpeech);
+  });
 
   // ---- 그래프를 손끝 진동으로 탐색하기 (ch6 전용) ----
   function setupGraphCanvas() {

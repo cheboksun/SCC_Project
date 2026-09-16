@@ -2,7 +2,7 @@ const express = require("express");
 const rateLimit = require("express-rate-limit");
 const { z } = require("zod");
 const { requireAuth } = require("../middleware/auth");
-const { callGemini } = require("../utils/gemini");
+const { callGemini, callGeminiVision } = require("../utils/gemini");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -80,6 +80,47 @@ router.post("/subject-detect", async (req, res) => {
     );
     const subject = SUBJECT_LIST.find((s) => guess.includes(s)) || "기타";
     res.json({ subject });
+  } catch (err) {
+    handleAiError(res, err);
+  }
+});
+
+const ocrSchema = z.object({
+  imageBase64: z.string().min(1),
+  mimeType: z.string().optional().default("image/jpeg"),
+});
+
+// 촬영한 교과서 페이지 사진을 Gemini Vision에 직접 보내서
+// (1) 본문 텍스트 (2) 과목 (3) 그림/표/그래프 등 비텍스트 시각자료 설명을 한번에 받아옴.
+// 시각장애 학생은 인식된 텍스트를 눈으로 검증할 수 없으므로, 그림 설명까지 함께 음성으로
+// 들려줘서 "이 페이지에 뭐가 있는지"를 놓치지 않게 하는 게 목적.
+router.post("/ocr", async (req, res) => {
+  const parsed = ocrSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+  const { imageBase64, mimeType } = parsed.data;
+
+  try {
+    const raw = await callGeminiVision(
+      `너는 시각장애 학생을 돕는 교과서 촬영 도우미야. 사진 속 교과서 페이지를 보고 아래 형식 그대로, 세 줄로만 답해.
+TEXT: 사진에 있는 모든 글자를 읽는 순서대로 옮겨 적어. 수식은 x^2+1 처럼 기호 그대로 옮겨 적어. 이 줄은 줄바꿈 없이 이어서 써.
+SUBJECT: 수학, 국어, 영어, 사회, 과학 중 하나만.
+VISUAL: 사진에 그림·사진·표·그래프처럼 글자가 아닌 시각 자료가 있으면, 그것이 무엇을 보여주는지 시각장애 학생에게 말로 설명해줘. 없으면 "없음"이라고만 써.`,
+      "이 교과서 페이지를 인식해줘.",
+      imageBase64,
+      mimeType
+    );
+
+    const textMatch = raw.match(/TEXT:\s*([\s\S]*?)(?:\n?SUBJECT:|$)/i);
+    const subjectMatch = raw.match(/SUBJECT:\s*(.+)/i);
+    const visualMatch = raw.match(/VISUAL:\s*([\s\S]*)/i);
+
+    const text = (textMatch ? textMatch[1] : raw).trim();
+    const subjectGuess = subjectMatch ? subjectMatch[1].trim() : "";
+    const subject = SUBJECT_LIST.find((s) => subjectGuess.includes(s)) || null;
+    const visualRaw = visualMatch ? visualMatch[1].trim() : "";
+    const visualDescription = visualRaw && !/^없음/.test(visualRaw) ? visualRaw : null;
+
+    res.json({ text, subject, visualDescription });
   } catch (err) {
     handleAiError(res, err);
   }

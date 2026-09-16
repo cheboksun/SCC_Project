@@ -10,7 +10,8 @@ const aiRoutes = require("./routes/ai");
 
 const app = express();
 
-app.use(express.json({ limit: "2mb" }));
+// 촬영 이미지를 base64로 보내는 /api/ai/ocr 때문에 넉넉히 잡음 (프론트에서 리사이즈해서 보내지만 여유를 둠)
+app.use(express.json({ limit: "8mb" }));
 
 const origin = process.env.FRONTEND_ORIGIN;
 app.use(cors(origin ? { origin } : {}));

@@ -83,6 +83,10 @@ const VoxAPI = (() => {
         .then((d) => d.replayCount),
     logQuizAttempt: (payload) =>
       request("/api/progress/quiz", { method: "POST", body: JSON.stringify(payload) }),
+    getProgressSummary: () => request("/api/progress/summary"),
+
+    aiOcr: (imageBase64, mimeType) =>
+      request("/api/ai/ocr", { method: "POST", body: JSON.stringify({ imageBase64, mimeType }) }),
 
     aiTutor: (chapterTitle, chapterText, question) =>
       request("/api/ai/tutor", { method: "POST", body: JSON.stringify({ chapterTitle, chapterText, question }) })
