@@ -87,6 +87,7 @@ const SPECIAL_BY_SLUG = {
     speechRate: parseFloat(localStorage.getItem("voxbook_rate") || "1.0"),
     isPlaying: false,
     hasRecording: false,
+    libraryOpenBookId: null, // null = 교과서 목차에서 책 목록 보는 중, 아니면 그 책의 단원 목록 보는 중
   };
 
   function chapterById(id) { return state.chapters.find((c) => c.id === id); }
@@ -103,6 +104,19 @@ const SPECIAL_BY_SLUG = {
     }
   }
 
+  // VoiceControl(상시 듣기 엔진)은 브라우저가 음성 인식을 지원할 때만 존재하므로
+  // 호출부마다 반복되는 방어 코드를 여기 모아둔다.
+  function vcSupported() { return !!(window.VoiceControl && VoiceControl.supported()); }
+  function vcStart(onFinal) { if (vcSupported()) VoiceControl.start(onFinal); }
+  function vcStop() { if (vcSupported()) VoiceControl.stop(); }
+  function vcMute() { if (vcSupported()) VoiceControl.mute(); }
+  function vcUnmute() { if (vcSupported()) VoiceControl.unmute(); }
+
+  // 말을 끊기만 하고 마이크는 여기서 풀지 않는다. 취소된 발화의 onend가 대신 풀어주는데,
+  // speak()가 새 발화를 시작하려고 부른 경우에는 그 onend가 한 세대 뒤처진 상태라
+  // (speakGen 불일치) 마이크를 풀지 않는다. 이 세대 검사가 없으면 cancel()의 비동기 onend가
+  // 새 발화 직후에 마이크를 열어버려서, AI 음성을 마이크가 되받아 인식하게 된다.
+  let speakGen = 0;
   function stopSpeaking() {
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   }
@@ -114,9 +128,13 @@ const SPECIAL_BY_SLUG = {
       return;
     }
     stopSpeaking();
+    speakGen++;
+    const myGen = speakGen;
+    vcMute();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "ko-KR";
     u.rate = state.speechRate;
+    u.onend = u.onerror = () => { if (myGen === speakGen) vcUnmute(); };
     window.speechSynthesis.speak(u);
   }
 
@@ -150,24 +168,69 @@ const SPECIAL_BY_SLUG = {
     document.querySelector(".toc.grid-cards").style.display = "grid";
   }
 
+  // 표지 하단에 들어가는 짧은 안내 문구. 실제 책 표지처럼 본문 미리보기는 넣지 않고,
+  // 꼭 필요한 힌트(특수 조작법, 촬영으로 추가됨)만 남긴다.
   function getPreviewFor(chapter) {
-    if (chapter.slug === "ch4") return "수식을 낭독 순서 문장으로 자동 변환해서 들려줘요";
-    if (chapter.slug === "ch6") return "손가락으로 그래프를 만져서 진동으로 탐색해요";
-    const t = (chapter.bodyText || "").trim();
-    return t.length > 40 ? t.slice(0, 40) + "…" : t;
+    if (chapter.slug === "ch4") return "수식을 낭독 순서 문장으로 들려줘요";
+    if (chapter.slug === "ch6") return "손가락으로 그래프를 탐색해요";
+    if (chapter.source === "ocr") return "촬영으로 추가됨";
+    return "";
   }
 
+  // 목차를 책장에 꽂힌 교과서 표지처럼 보여준다: 과목 색이 꽉 찬 세로 표지 카드.
   function renderTocCard(chapter) {
     const btn = document.createElement("button");
     btn.dataset.id = chapter.id;
     btn.dataset.subject = chapter.subject || "";
     btn.setAttribute("aria-current", "false");
     btn.innerHTML = `
-      <span class="card-subject">${chapter.subject || (chapter.source === "ocr" ? "촬영" : "")}</span>
+      <span class="card-subject">${chapter.subject || (chapter.source === "ocr" ? "촬영" : "교과서")}</span>
       <span class="card-title">${chapter.title}</span>
       <span class="card-preview">${getPreviewFor(chapter)}</span>`;
     btn.addEventListener("click", () => setCurrentChapter(chapter.id));
     return btn;
+  }
+
+  // 여러 페이지 넣기로 들어온 책은 단원별로 쪼개서 보여주지 않고, "책" 표지 한 장으로만 보여준다.
+  // 뒤에 페이지가 겹쳐 보이는 그림자(CSS)로 "여러 장짜리 묶음"임을 표현한다.
+  // 누르면 그 책의 단원 목록("교과서 목차 열기")으로 들어간다 — 단원은 그 안에서 고른다.
+  function renderFolderCard(book) {
+    const btn = document.createElement("button");
+    btn.className = "folder-card";
+    btn.dataset.bookId = book.bookId;
+    btn.dataset.subject = book.subject || "";
+    btn.setAttribute("aria-current", "false");
+    const flagged = book.chapters.filter((c) => c.needsReview).length;
+    btn.innerHTML = `
+      <span class="card-subject">${book.subject || "교과서"}</span>
+      <span class="card-title">${book.bookTitle}</span>
+      <span class="card-preview">${book.chapters.length}페이지${flagged ? ` · 확인 필요 ${flagged}` : ""}</span>`;
+    btn.addEventListener("click", () => openLibraryPanel(book.bookId));
+    return btn;
+  }
+
+  // 상세화면에 "이 단원의 N페이지 중 K번째" 이전/다음 페이지 내비게이션을 붙인다(책 느낌 탐색).
+  function renderGroupNavHtml(chapter) {
+    if (!chapterBelongsToBook(chapter)) return "";
+    const siblings = sortGroupChapters(state.chapters.filter((c) => groupKey(c) === groupKey(chapter)));
+    if (siblings.length <= 1) return "";
+    const idx = siblings.findIndex((c) => c.id === chapter.id);
+    const unitLabel = chapter.unitNumber == null ? "미배정" : `${chapter.unitNumber}단원`;
+    const label = chapter.bookTitle ? `${chapter.bookTitle} · ${unitLabel}` : `${chapter.subject || ""} ${unitLabel}`;
+    return `<div class="guide-line group-nav" id="group-nav-${chapter.id}">
+        📁 ${label} · ${idx + 1}/${siblings.length}페이지
+        <button class="icon-btn" data-group-prev="${chapter.id}" ${idx <= 0 ? "disabled" : ""}>◀ 이전 페이지</button>
+        <button class="icon-btn" data-group-next="${chapter.id}" ${idx >= siblings.length - 1 ? "disabled" : ""}>다음 페이지 ▶</button>
+      </div>`;
+  }
+
+  function jumpGroupPage(id, delta) {
+    const chapter = chapterById(id);
+    if (!chapter) return;
+    const siblings = sortGroupChapters(state.chapters.filter((c) => groupKey(c) === groupKey(chapter)));
+    const idx = siblings.findIndex((c) => c.id === id);
+    const target = siblings[idx + delta];
+    if (target) setCurrentChapter(target.id);
   }
 
   function renderChapterSection(chapter) {
@@ -190,6 +253,8 @@ const SPECIAL_BY_SLUG = {
     section.innerHTML = `
       <span class="eyebrow">${chapter.subject || (chapter.source === "ocr" ? "촬영으로 추가됨" : "")}</span>
       <h2>${chapter.title}</h2>
+      ${renderReviewBadgeHtml(chapter)}
+      ${renderGroupNavHtml(chapter)}
       ${extra}
       <p class="chapter-body">${chapter.slug === "ch5" ? "(현대어 풀이: " + chapter.bodyText + ")" : chapter.bodyText}</p>
       <div class="row-actions">
@@ -198,20 +263,64 @@ const SPECIAL_BY_SLUG = {
         ${chapter.slug === "ch5" ? `<button class="icon-btn" id="toggleRecording">🎙 녹음 있음/없음 전환 (데모)</button>` : ""}
       </div>
       ${chapter.slug === "ch5" ? `<div class="guide-line" id="ch5-status">지금 상태: 사람 녹음 없음 → 현대어 풀이를 음성으로 재생함</div>` : ""}
-      ${chapter.slug === "ch6" ? renderGraphBlockHtml() : ""}
+      ${hasGraphPanel(chapter) ? renderGraphBlockHtml(chapter) : ""}
     `;
     return section;
   }
 
-  function renderGraphBlockHtml() {
+  // 그래프 패널은 수학 단원 전체에 붙는다(시드 단원이든 촬영·배치로 추가된 단원이든 동일).
+  function hasGraphPanel(chapter) { return chapter.subject === "수학" && !!window.GraphSound; }
+
+  // 단원 자동 매칭에 실패한 페이지("unit_unmatched")는 "확인 완료"를 눌러도 그냥 경고만
+  // 사라질 뿐 영원히 미배정으로 남았었다. 그 책의 다른 페이지들이 이미 아는 단원 번호를
+  // 골라서 직접 지정하게 해서, 실제로 그 단원으로 옮겨지도록 한다.
+  function renderReviewBadgeHtml(chapter) {
+    if (!chapter.needsReview) return "";
+    if (chapter.reviewReason === "unit_unmatched" && chapter.bookId) {
+      const knownUnits = [...new Set(
+        state.chapters
+          .filter((c) => c.bookId === chapter.bookId && c.unitNumber != null)
+          .map((c) => c.unitNumber)
+      )].sort((a, b) => a - b);
+      const picker = knownUnits.length
+        ? `<select id="review-unit-input-${chapter.id}" aria-label="단원 선택">
+             <option value="">미배정으로 두기</option>
+             ${knownUnits.map((n) => `<option value="${n}">${n}단원</option>`).join("")}
+           </select>`
+        : `<input type="number" id="review-unit-input-${chapter.id}" min="1" step="1"
+             placeholder="단원 번호" style="width:88px;" aria-label="단원 번호 입력">`;
+      return `<div class="review-row" id="review-row-${chapter.id}">
+          <span class="badge-warning">⚠ 단원을 확인해주세요</span>
+          ${picker}
+          <button class="icon-btn" data-assign-unit="${chapter.id}">지정</button>
+        </div>`;
+    }
+    return `<div class="review-row" id="review-row-${chapter.id}">
+        <span class="badge-warning">⚠ 확인이 필요해요</span>
+        <button class="icon-btn" data-review-done="${chapter.id}">확인 완료</button>
+      </div>`;
+  }
+
+  function renderGraphBlockHtml(chapter) {
+    const id = chapter.id;
+    const options = GraphSound.GRAPH_TYPES
+      .map((g) => `<option value="${g.id}">${g.label}</option>`)
+      .join("");
     return `
-      <canvas id="graphCanvas" width="600" height="300"
-        style="width:100%;height:220px;touch-action:none;background:var(--surface-2);border-radius:10px;display:block;margin-top:10px;"
-        aria-hidden="true"></canvas>
-      <div class="guide-line" id="graphStatus">아직 손가락을 대지 않았어요</div>
-      <div class="row-actions" style="margin-top:8px;">
-        <button class="icon-btn" id="graphDescribeBtn">🔊 이 그래프 설명 듣기</button>
-        <button class="icon-btn" id="graphStepBtn">🔊 화면리더용: 단계별로 순서대로 듣기</button>
+      <div class="graph-panel">
+        <label for="graph-equation-text-${id}">그래프로 볼 방정식 직접 입력하기</label>
+        <div class="field-row">
+          <input id="graph-equation-text-${id}" type="text" placeholder="y = 2x^2 - 3x + 1" aria-label="그래프로 볼 방정식 입력">
+          <button class="btn" id="graph-apply-equation-${id}">적용하기</button>
+        </div>
+        <label for="graph-type-select-${id}" style="margin-top:12px;">또는 그래프 모양 고르기</label>
+        <select id="graph-type-select-${id}" class="graph-select" aria-label="그래프 모양 선택">${options}</select>
+        <div class="row-actions" style="margin-top:10px;">
+          <button class="icon-btn" id="graph-play-${id}">🔊 소리·진동으로 듣기</button>
+          <button class="icon-btn" id="graph-toggle-trace-${id}" aria-pressed="false">손으로 그래프 따라 그리기</button>
+        </div>
+        <canvas id="graph-trace-${id}" class="graph-trace-canvas" aria-hidden="true" hidden></canvas>
+        <div class="guide-line" id="graph-desc-${id}" aria-live="polite"></div>
       </div>`;
   }
 
@@ -220,8 +329,15 @@ const SPECIAL_BY_SLUG = {
     const contentEl = $("content");
     tocEl.innerHTML = "";
     contentEl.innerHTML = "";
-    state.chapters.forEach((chapter) => {
+    // 여러 페이지 넣기로 들어온 단원은 개별 카드 대신 단원별 폴더 카드 한 장으로 묶어서 보여준다
+    // ("페이지로 하지 말고 책/폴더 느낌으로" 요청 반영). 시드/단일 촬영 단원은 기존처럼 개별 카드.
+    state.chapters.filter((c) => !chapterBelongsToBook(c)).forEach((chapter) => {
       tocEl.appendChild(renderTocCard(chapter));
+    });
+    buildTocFolders().forEach((group) => {
+      tocEl.appendChild(renderFolderCard(group));
+    });
+    state.chapters.forEach((chapter) => {
       contentEl.appendChild(renderChapterSection(chapter));
     });
     wireDynamicHandlers();
@@ -247,7 +363,63 @@ const SPECIAL_BY_SLUG = {
         vibrate(30);
       };
     }
-    if ($("graphCanvas")) setupGraphCanvas();
+    document.querySelectorAll("[data-review-done]").forEach((btn) => {
+      btn.onclick = () => markReviewed(btn.dataset.reviewDone);
+    });
+    document.querySelectorAll("[data-assign-unit]").forEach((btn) => {
+      btn.onclick = () => assignUnit(btn.dataset.assignUnit);
+    });
+    document.querySelectorAll("[data-group-prev]").forEach((btn) => {
+      btn.onclick = () => jumpGroupPage(btn.dataset.groupPrev, -1);
+    });
+    document.querySelectorAll("[data-group-next]").forEach((btn) => {
+      btn.onclick = () => jumpGroupPage(btn.dataset.groupNext, 1);
+    });
+    state.chapters.forEach((chapter) => {
+      if (hasGraphPanel(chapter) && $("graph-type-select-" + chapter.id)) setupGraphPanel(chapter);
+    });
+  }
+
+  async function markReviewed(id) {
+    const chapter = chapterById(id);
+    if (!chapter) return;
+    try {
+      await VoxAPI.updateChapter(id, { needsReview: false, reviewReason: null });
+      chapter.needsReview = false;
+      chapter.reviewReason = null;
+      const row = $("review-row-" + id);
+      if (row) row.remove();
+      showToast("확인 완료로 표시했어요");
+      speak("확인 완료로 표시했어요.");
+      vibrate([15, 30, 15]);
+    } catch (e) {
+      showToast("확인 완료 처리에 실패했어요: " + e.message);
+    }
+  }
+
+  async function assignUnit(id) {
+    const chapter = chapterById(id);
+    if (!chapter) return;
+    const input = $("review-unit-input-" + id);
+    const raw = input ? input.value.trim() : "";
+    const unitNumber = raw ? parseInt(raw, 10) : null;
+    if (raw && !Number.isInteger(unitNumber)) {
+      showToast("단원 번호는 숫자로 입력해주세요");
+      return;
+    }
+    try {
+      await VoxAPI.updateChapter(id, { unitNumber, needsReview: false, reviewReason: null });
+      chapter.unitNumber = unitNumber;
+      chapter.needsReview = false;
+      chapter.reviewReason = null;
+      const row = $("review-row-" + id);
+      if (row) row.remove();
+      showToast(unitNumber ? `${unitNumber}단원으로 지정했어요` : "미배정으로 남겨뒀어요");
+      speak(unitNumber ? `${unitNumber}단원으로 지정했습니다.` : "미배정으로 남겼습니다.");
+      vibrate([15, 30, 15]);
+    } catch (e) {
+      showToast("단원 지정에 실패했어요: " + e.message);
+    }
   }
 
   function setCurrentChapter(id, opts = {}) {
@@ -257,7 +429,10 @@ const SPECIAL_BY_SLUG = {
     const sectionEl = $("chapter-" + id);
     if (sectionEl) sectionEl.classList.add("current");
     document.querySelectorAll(".toc.grid-cards button").forEach((b) => {
-      b.setAttribute("aria-current", b.dataset.id === id ? "true" : "false");
+      const current = b.dataset.id
+        ? b.dataset.id === id
+        : !!b.dataset.bookId && chapter && chapter.bookId === b.dataset.bookId;
+      b.setAttribute("aria-current", current ? "true" : "false");
     });
     nowPlaying.textContent = chapter ? chapter.title : "";
     if (!opts.silent) {
@@ -455,6 +630,58 @@ const SPECIAL_BY_SLUG = {
     fileCaptureInput.value = "";
   });
 
+  // 실시간 프레임 품질 안내(너무 가까움/어두움/흔들림)와 자동 촬영에 쓰는 상태
+  let frameLoopId = null;
+  let goodStreak = 0;
+  let lastSpokenStatus = null;
+  let lastSpokenAt = 0;
+
+  function stopFrameLoop() {
+    if (frameLoopId) clearInterval(frameLoopId);
+    frameLoopId = null;
+    goodStreak = 0;
+    lastSpokenStatus = null;
+  }
+
+  function startFrameLoop() {
+    if (!window.FrameQuality) return;
+    stopFrameLoop();
+    lastSpokenAt = 0;
+    frameLoopId = setInterval(() => {
+      if (!mediaStream || cameraVideo.readyState < 2) return;
+      const evalResult = FrameQuality.evaluate(FrameQuality.analyze(cameraVideo));
+      guideLine.textContent = evalResult.message;
+
+      const now = Date.now();
+      if (evalResult.status !== lastSpokenStatus || now - lastSpokenAt > 4000) {
+        speak(evalResult.message);
+        lastSpokenStatus = evalResult.status;
+        lastSpokenAt = now;
+      }
+
+      if (evalResult.status !== "good") {
+        goodStreak = 0;
+        return;
+      }
+      goodStreak++;
+      if (goodStreak >= 3) {
+        goodStreak = 0;
+        capturePhoto();
+      }
+    }, 500);
+  }
+
+  // 촬영이 끝나면(또는 카메라를 끄면) 상시 듣기 모드가 켜져 있던 경우에만 AI 튜터 듣기로 돌아간다.
+  function restoreListeningAfterCamera() {
+    if (alwaysListenOn) vcStart(handleAlwaysListenTranscript);
+    else vcStop();
+  }
+
+  function handleCaptureCommand(transcript) {
+    const t = (transcript || "").replace(/\s/g, "");
+    if (/캡처|찍어줘|촬영/.test(t)) capturePhoto();
+  }
+
   cameraStartBtn.addEventListener("click", async () => {
     guideLine.textContent = "카메라를 켜는 중...";
     speak("카메라를 켜는 중이에요");
@@ -465,28 +692,38 @@ const SPECIAL_BY_SLUG = {
       cameraStartBtn.style.display = "none";
       shutterBtn.style.display = "inline-block";
       guideLine.textContent = "페이지가 화면 가운데 오도록 맞추고 촬영하기를 누르세요";
-      speak("페이지가 화면 가운데 오도록 맞추고, 촬영하기 버튼을 눌러주세요");
+      speak("페이지가 화면 가운데 오도록 맞춰주세요. 촬영하기 버튼을 누르거나 캡처라고 말씀하시면 촬영합니다.");
       vibrate(20);
+      startFrameLoop();
+      vcStart(handleCaptureCommand);
     } catch (err) {
       guideLine.textContent = "카메라를 켤 수 없어요. 권한을 확인해 주세요.";
       showToast("카메라 권한이 필요해요");
       vibrate(200);
+      stopFrameLoop();
+      restoreListeningAfterCamera();
     }
   });
 
-  shutterBtn.addEventListener("click", async () => {
+  async function capturePhoto() {
+    if (!mediaStream) return;
+    stopFrameLoop();
     guideLine.textContent = "촬영 중...";
     vibrate([20, 40, 20]);
     captureCanvas.width = cameraVideo.videoWidth;
     captureCanvas.height = cameraVideo.videoHeight;
     captureCanvas.getContext("2d").drawImage(cameraVideo, 0, 0);
-    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
     cameraVideo.style.display = "none";
     shutterBtn.style.display = "none";
     cameraStartBtn.style.display = "inline-block";
     cameraStartBtn.textContent = "다시 촬영하기";
+    restoreListeningAfterCamera();
     await runOcr(captureCanvas);
-  });
+  }
+
+  shutterBtn.addEventListener("click", () => capturePhoto());
 
   async function runOcr(source) {
     guideLine.textContent = "AI가 페이지를 읽는 중... (몇 초 걸릴 수 있어요)";
@@ -670,27 +907,28 @@ const SPECIAL_BY_SLUG = {
       if (e.error !== "no-speech") vibrate(200);
     });
     sharedRecognition.addEventListener("end", () => {
-      const wasAlwaysListen = activeVoiceTarget && activeVoiceTarget.isAlwaysListen;
       resetMicBtn(activeVoiceTarget);
       activeVoiceTarget = null;
       if (pendingVoiceTarget) {
         const next = pendingVoiceTarget;
         pendingVoiceTarget = null;
-        sharedRecognition.continuous = !!next.isAlwaysListen;
         actuallyStartRecognition(next);
-      } else if (alwaysListenOn && wasAlwaysListen) {
-        actuallyStartRecognition({ micBtn: null, inputEl: askInput, statusEl: alwaysListenStatus, onResult: () => askTutor(), isAlwaysListen: true });
+      } else {
+        // 한 번 듣기 체인이 완전히 끝났을 때만 상시 듣기 마이크를 돌려준다.
+        vcUnmute();
       }
     });
   }
 
+  // 두 개의 SpeechRecognition이 동시에 마이크를 잡으면 서로 인식을 방해하므로,
+  // 한 번 듣기(sharedRecognition)가 도는 동안에는 상시 듣기(VoiceControl)를 재운다.
   function startVoiceCapture(target) {
     if (!SpeechRecognitionAPI) { showToast("이 브라우저는 음성 인식을 지원하지 않아요"); return; }
     if (activeVoiceTarget) {
       pendingVoiceTarget = target;
       try { sharedRecognition.stop(); } catch (e) {}
     } else {
-      sharedRecognition.continuous = !!target.isAlwaysListen;
+      vcMute();
       actuallyStartRecognition(target);
     }
   }
@@ -706,6 +944,16 @@ const SPECIAL_BY_SLUG = {
       }
       startVoiceCapture({ micBtn, inputEl, statusEl, onResult });
     });
+  }
+
+  // 상시 듣기로 들어온 말은 그대로 AI 튜터 질문으로 넘긴다.
+  function handleAlwaysListenTranscript(transcript) {
+    const said = (transcript || "").trim();
+    if (!said) return;
+    askInput.value = said;
+    alwaysListenStatus.textContent = "인식됨: " + said;
+    vibrate([15, 30, 15]);
+    askTutor();
   }
 
   setupVoiceInput($("askMicBtn"), askInput, askStatus, () => askTutor());
@@ -750,19 +998,16 @@ const SPECIAL_BY_SLUG = {
 
   const alwaysListenBtn = $("alwaysListenBtn");
   alwaysListenBtn.addEventListener("click", () => {
-    if (!SpeechRecognitionAPI) { showToast("이 브라우저는 음성 인식을 지원하지 않아요"); return; }
+    if (!vcSupported()) { showToast("이 브라우저는 음성 인식을 지원하지 않아요"); return; }
     alwaysListenOn = !alwaysListenOn;
     alwaysListenBtn.setAttribute("aria-pressed", alwaysListenOn ? "true" : "false");
     alwaysListenBtn.textContent = alwaysListenOn ? "🎙 항상 듣기: 켜짐" : "🎙 항상 듣기: 꺼짐";
     if (alwaysListenOn) {
-      sharedRecognition.continuous = true;
-      startVoiceCapture({ micBtn: null, inputEl: askInput, statusEl: alwaysListenStatus, onResult: () => askTutor(), isAlwaysListen: true });
+      vcStart(handleAlwaysListenTranscript);
       alwaysListenStatus.textContent = "항상 듣기 모드 켜짐 — 아무 때나 말하면 자동으로 질문으로 인식돼요";
       showToast("항상 듣기 모드 켜짐");
     } else {
-      sharedRecognition.continuous = false;
-      try { sharedRecognition.stop(); } catch (e) {}
-      activeVoiceTarget = null;
+      vcStop();
       alwaysListenStatus.textContent = "";
       showToast("항상 듣기 모드 꺼짐");
     }
@@ -844,6 +1089,7 @@ const SPECIAL_BY_SLUG = {
     const chapter = chapterById(state.currentId);
     quizQuestionBox.textContent = "퀴즈를 만드는 중...";
     quizFeedback.textContent = "";
+    quizAnswerInput.value = ""; // 이전 문제에 썼던 답이 새 문제에 그대로 남아있지 않게 비움
     quizAnswerRow.style.display = "none";
     quizStartBtn.disabled = true;
     try {
@@ -945,96 +1191,610 @@ const SPECIAL_BY_SLUG = {
     if (lastReportSpeech) speak(lastReportSpeech);
   });
 
-  // ---- 그래프를 손끝 진동으로 탐색하기 (ch6 전용) ----
-  function setupGraphCanvas() {
-    const graphCanvas = $("graphCanvas");
-    const graphCtx = graphCanvas.getContext("2d");
-    const graphStatus = $("graphStatus");
-    const W = graphCanvas.width, H = graphCanvas.height;
-    const padding = 30;
+  // ---- 그래프를 소리·진동으로 듣고 손으로 따라 그리기 (수학 단원 공통) ----
+  // 단원별로 "직접 입력한 방정식"을 기억해 둔다. wireDynamicHandlers()가 다시 돌아도
+  // 적용해 둔 방정식이 사라지지 않도록 클로저 밖(모듈 스코프)에 보관한다.
+  const equationGraphs = new Map();
+  let boundTraceCanvas = null;
 
-    function graphValue(rNorm) { return rNorm * rNorm; }
-    function toScreenY(v) { return H - padding - v * (H - padding * 2); }
-    function toScreenX(r) { return padding + r * (W - padding * 2); }
-
-    function drawGraph() {
-      graphCtx.clearRect(0, 0, W, H);
-      graphCtx.strokeStyle = "#444a55";
-      graphCtx.lineWidth = 2;
-      graphCtx.beginPath();
-      graphCtx.moveTo(padding, padding * 0.3);
-      graphCtx.lineTo(padding, H - padding);
-      graphCtx.lineTo(W - padding * 0.3, H - padding);
-      graphCtx.stroke();
-      graphCtx.strokeStyle = "#5ec8a8";
-      graphCtx.lineWidth = 4;
-      graphCtx.beginPath();
-      for (let i = 0; i <= 100; i++) {
-        const rNorm = i / 100;
-        const x = toScreenX(rNorm), y = toScreenY(graphValue(rNorm));
-        if (i === 0) graphCtx.moveTo(x, y); else graphCtx.lineTo(x, y);
-      }
-      graphCtx.stroke();
+  // AI가 뽑아준 type/coefficients로 실제 계산 가능한 함수를 만든다.
+  // 정의역 정규화는 GraphSound.normalizeFn/playFromEquation이 맡는다.
+  function buildEquationFn(type, coefficients) {
+    const [a = 0, b = 0, c = 0] = coefficients || [];
+    switch (type) {
+      case "linear": return (x) => a * x + b;
+      case "quadratic": return (x) => a * x * x + b * x + c;
+      case "sine": return (x) => a * Math.sin(b * x + c);
+      case "exponential": return (x) => a * Math.exp(b * x);
+      case "logarithm": return (x) => a * Math.log(b * x);
+      default: return null;
     }
-    drawGraph();
+  }
 
-    function handleGraphTouch(clientX, clientY) {
-      const rect = graphCanvas.getBoundingClientRect();
-      const x = (clientX - rect.left) * (W / rect.width);
-      const y = (clientY - rect.top) * (H / rect.height);
-      const rNorm = Math.min(Math.max((x - padding) / (W - padding * 2), 0), 1);
-      const curveY = toScreenY(graphValue(rNorm));
-      const distance = Math.abs(y - curveY);
+  function formatNum(n) {
+    if (!Number.isFinite(n)) return String(n);
+    return String(Math.round(n * 100) / 100);
+  }
 
-      if (state.mode !== "sound") {
-        if (distance < 8) navigator.vibrate && navigator.vibrate(45);
-        else if (distance < 20) navigator.vibrate && navigator.vibrate(20);
-        else if (distance < 40) navigator.vibrate && navigator.vibrate(6);
-        else navigator.vibrate && navigator.vibrate(0);
+  // 꼭짓점·기울기 같은 수치는 AI에 묻지 않고 계수로 직접 계산한다(숫자를 지어낼 위험 없음).
+  function buildEquationDescription(type, coefficients, equationLabel, aiAnalysis) {
+    const [a = 0, b = 0, c = 0] = coefficients || [];
+    let base;
+    switch (type) {
+      case "linear": {
+        const dir = a > 0 ? "오른쪽 위로 올라가는" : a < 0 ? "오른쪽 아래로 내려가는" : "가로로 평평한";
+        base = `${equationLabel}은 기울기 ${formatNum(a)}, y절편 ${formatNum(b)}인 ${dir} 직선입니다.`;
+        break;
       }
-      if (state.mode !== "vibe" && distance < 40) {
-        try {
-          const ctx = new (window.AudioContext || window.webkitAudioContext)();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.frequency.value = 300 + (40 - distance) * 8;
-          gain.gain.setValueAtTime(0.05, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-          osc.connect(gain).connect(ctx.destination);
-          osc.start(); osc.stop(ctx.currentTime + 0.08);
-        } catch (e) {}
+      case "quadratic": {
+        if (a === 0) {
+          base = `${equationLabel} 그래프의 모양을 소리로 들려드립니다.`;
+        } else {
+          const vx = -b / (2 * a);
+          const vy = a * vx * vx + b * vx + c;
+          const shape = a > 0 ? "아래로 볼록한" : "위로 볼록한";
+          base = `${equationLabel}은 ${shape} 포물선이며, 꼭짓점은 (${formatNum(vx)}, ${formatNum(vy)})입니다.`;
+        }
+        break;
       }
-      graphStatus.textContent = distance < 8
-        ? `곡선 위예요! 반지름 비율 약 ${Math.round(rNorm * 100)}%`
-        : "곡선을 찾는 중... 손가락을 위아래로 움직여 보세요";
+      case "sine": {
+        const period = b !== 0 ? (2 * Math.PI) / Math.abs(b) : 0;
+        base = `${equationLabel}은 진폭 ${formatNum(Math.abs(a))}, 주기 약 ${formatNum(period)}인 파도 모양의 곡선입니다.`;
+        break;
+      }
+      case "exponential": {
+        const trend = b > 0 ? "증가하는" : b < 0 ? "감소하는" : "변화 없는";
+        base = `${equationLabel}은 x가 0일 때 값이 ${formatNum(a)}이고, x가 커질수록 ${trend} 지수함수 곡선입니다.`;
+        break;
+      }
+      case "logarithm": {
+        const trend = a > 0 ? "증가하는" : "감소하는";
+        base = `${equationLabel}은 x가 커질수록 완만하게 ${trend} 로그함수 곡선입니다.`;
+        break;
+      }
+      default:
+        base = `${equationLabel} 그래프의 모양을 소리로 들려드립니다.`;
+    }
+    const extra = (aiAnalysis || "").trim();
+    return extra ? `${base} ${extra}` : base;
+  }
+
+  function setupGraphPanel(chapter) {
+    const id = chapter.id;
+    const equationInput = $("graph-equation-text-" + id);
+    const applyBtn = $("graph-apply-equation-" + id);
+    const select = $("graph-type-select-" + id);
+    const playBtnEl = $("graph-play-" + id);
+    const traceToggle = $("graph-toggle-trace-" + id);
+    const traceCanvas = $("graph-trace-" + id);
+    const descEl = $("graph-desc-" + id);
+
+    function currentEquation() { return equationGraphs.get(id) || null; }
+
+    function ensureEquationOption() {
+      const eq = currentEquation();
+      if (!eq || select.querySelector('option[value="from-equation"]')) return;
+      const opt = document.createElement("option");
+      opt.value = "from-equation";
+      opt.textContent = eq.label;
+      select.insertBefore(opt, select.firstChild);
+      select.value = "from-equation";
+    }
+    // 목차를 다시 그리면 select가 새로 만들어지므로, 적용해 둔 방정식 항목을 복구한다.
+    ensureEquationOption();
+
+    function updateTraceGraphFn() {
+      if (!window.GraphTrace) return;
+      const eq = currentEquation();
+      if (select.value === "from-equation" && eq) {
+        const normFn = GraphSound.normalizeFn(eq.fn, eq.domainMin, eq.domainMax);
+        if (normFn) GraphTrace.setGraphFn(normFn);
+        return;
+      }
+      const type = GraphSound.GRAPH_TYPES.find((g) => g.id === select.value);
+      if (type) GraphTrace.setGraphFn(type.fn);
     }
 
-    graphCanvas.addEventListener("touchmove", (e) => { e.preventDefault(); const t = e.touches[0]; if (t) handleGraphTouch(t.clientX, t.clientY); }, { passive: false });
-    graphCanvas.addEventListener("touchstart", (e) => { const t = e.touches[0]; if (t) handleGraphTouch(t.clientX, t.clientY); });
-    let mouseDown = false;
-    graphCanvas.addEventListener("mousedown", () => (mouseDown = true));
-    window.addEventListener("mouseup", () => (mouseDown = false));
-    graphCanvas.addEventListener("mousemove", (e) => { if (mouseDown) handleGraphTouch(e.clientX, e.clientY); });
-
-    $("graphDescribeBtn").addEventListener("click", () => playChapter(state.currentId));
-    $("graphStepBtn").addEventListener("click", () => {
-      const steps = [0, 0.25, 0.5, 0.75, 1.0];
-      const labels = ["시작 지점", "4분의 1 지점", "절반 지점", "4분의 3 지점", "끝 지점"];
-      let i = 0;
-      function speakStep() {
-        if (i >= steps.length) {
-          speak("설명이 끝났어요. 전체적으로 처음엔 완만하게, 갈수록 점점 가파르게 올라가는 곡선이에요.");
+    applyBtn.onclick = async () => {
+      const text = equationInput.value.trim();
+      if (!text) { speak("방정식을 입력해주세요."); showToast("방정식을 입력해주세요"); return; }
+      applyBtn.disabled = true;
+      descEl.textContent = "방정식을 분석하는 중...";
+      speak("방정식을 분석하고 있습니다.");
+      try {
+        const parsed = await VoxAPI.aiParseGraphEquation(text);
+        const fn = parsed.found ? buildEquationFn(parsed.type, parsed.coefficients) : null;
+        if (!fn || !(parsed.domainMax > parsed.domainMin)) {
+          descEl.textContent = "방정식을 인식하지 못했어요.";
+          speak("방정식을 인식하지 못했습니다. 예를 들어 y = 2x^2 - 3x + 1처럼 입력해보세요.");
           return;
         }
-        const heightPercent = Math.round(graphValue(steps[i]) * 100);
-        speak(`${labels[i]}, 반지름 비율 ${Math.round(steps[i] * 100)}퍼센트일 때, 넓이는 최대치의 약 ${heightPercent}퍼센트예요.`);
-        graphStatus.textContent = `${labels[i]} — 넓이 약 ${heightPercent}%`;
-        i++;
-        setTimeout(speakStep, 3200);
+        equationGraphs.set(id, {
+          fn,
+          domainMin: parsed.domainMin,
+          domainMax: parsed.domainMax,
+          label: `직접 입력한 방정식: ${parsed.equationLabel}`,
+          desc: buildEquationDescription(parsed.type, parsed.coefficients, parsed.equationLabel, parsed.aiAnalysis),
+        });
+        const existing = select.querySelector('option[value="from-equation"]');
+        if (existing) existing.remove();
+        ensureEquationOption();
+        updateTraceGraphFn();
+        descEl.textContent = equationGraphs.get(id).label;
+        speak(`${parsed.equationLabel} 방정식을 적용했습니다. 소리·진동으로 듣기 버튼을 눌러보세요.`);
+      } catch (e) {
+        descEl.textContent = "방정식을 분석하는 중 오류가 발생했어요.";
+        speak("방정식을 분석하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+      } finally {
+        applyBtn.disabled = false;
       }
-      speakStep();
+    };
+
+    select.onchange = updateTraceGraphFn;
+
+    playBtnEl.onclick = () => {
+      // 마이크가 켜져 있으면 iOS가 오디오를 리시버로 라우팅해서 오실레이터 소리가
+      // 거의 안 들리므로, 재생하는 동안은 마이크를 잠깐 끈다.
+      vcMute();
+      const eq = currentEquation();
+      const type = select.value === "from-equation" && eq
+        ? GraphSound.playFromEquation(eq.fn, eq.domainMin, eq.domainMax, eq)
+        : GraphSound.play(select.value);
+      if (!type) {
+        // 뒤따를 speak()가 없으므로 여기서 직접 마이크를 돌려준다.
+        vcUnmute();
+        descEl.textContent = "그래프 소리를 재생하지 못했어요.";
+        return;
+      }
+      descEl.textContent = `${type.label} · ${type.desc} [진동 상태: ${type.vibrateInfo}]`;
+      // 오실레이터 음이 끝난 뒤에 설명을 읽어준다. speak()가 끝나면 onend에서 마이크가 자동 재개된다.
+      setTimeout(() => speak(type.desc), GraphSound.DURATION * 1000);
+    };
+
+    traceToggle.onclick = () => {
+      const opening = traceCanvas.hidden;
+      traceCanvas.hidden = !opening;
+      traceToggle.setAttribute("aria-pressed", opening ? "true" : "false");
+      if (!opening) return;
+      // GraphTrace는 한 번에 캔버스 하나에만 묶이는 싱글턴이다. 같은 캔버스에 중복으로
+      // 리스너가 쌓이지 않도록, 지금 묶여 있는 캔버스와 다를 때만 다시 묶는다.
+      if (window.GraphTrace && boundTraceCanvas !== traceCanvas) {
+        GraphTrace.bind(traceCanvas);
+        boundTraceCanvas = traceCanvas;
+      }
+      updateTraceGraphFn();
+      speak("화면을 손가락으로 누르고 왼쪽에서 오른쪽으로 밀면서 그래프를 따라 그려보세요.");
+    };
+  }
+
+  // ---- 여러 페이지 넣기 (PDF / 이미지 배치 가져오기) ----
+  const batchImportPanel = $("batchImportPanel");
+  const batchImportStatus = $("batchImportStatus");
+  const batchPickFileBtn = $("batchPickFileBtn");
+  const batchFileInput = $("batchFileInput");
+  const libraryPanel = $("libraryPanel");
+
+  const EMPTY_PAGE_TEXT = "(이 페이지에서는 글자를 읽지 못했어요)";
+
+  function updateBatchStatus(text) { batchImportStatus.textContent = text; }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
     });
   }
+
+  // 북마크 제목에 "N단원"처럼 번호가 있으면 그걸 쓰고, 없으면 목차 안에서의 순서(1부터)를 쓴다.
+  function deriveUnitNumber(title, indexFallback) {
+    const m = (title || "").match(/(\d+)\s*단원/) || (title || "").match(/^[\s\S]{0,4}?(\d+)[.\s]/);
+    if (m) return parseInt(m[1], 10);
+    return indexFallback + 1;
+  }
+
+  async function detectSubjectOrDefault(text) {
+    if (!text) return null;
+    try { return await VoxAPI.aiDetectSubject(text); } catch (e) { return null; }
+  }
+
+  function speakMilestone(pct, spoken) {
+    if (pct < spoken + 25 || pct >= 100) return spoken;
+    const next = Math.floor(pct / 25) * 25;
+    speak(`${next}퍼센트 처리했습니다.`);
+    return next;
+  }
+
+  // 목차로 보이는 페이지를 찾아서(있으면) 단원 목록을 뽑고, 나머지 페이지를 한 번의 AI 요청으로
+  // 일괄 매칭한다. PDF(북마크 없을 때)와 여러 장 사진 넣기 양쪽에서 공통으로 쓴다.
+  async function recognizeUnitsFromPages(pagesText) {
+    // 문장 중간에 "목차"라는 단어가 우연히 들어간 페이지(표지 소개 문구 등)까지 걸리지 않도록,
+    // 페이지가 "목차"/"차례"라는 말로 시작할 때만 진짜 목차 페이지로 인정한다.
+    const tocPageIndex = pagesText.slice(0, 3).findIndex((t) => t && /^(목차|차례)/.test(t.trim()));
+    let units = null;
+    if (tocPageIndex !== -1) {
+      try {
+        const parsed = await VoxAPI.aiExtractToc(pagesText[tocPageIndex]);
+        if (parsed && parsed.length) units = parsed;
+      } catch (e) { /* 목차 파싱 실패 시 목차 없이 진행 */ }
+    }
+
+    const matchedByIndex = new Map();
+    if (units && units.length) {
+      const pagesToMatch = [];
+      for (let i = 0; i < pagesText.length; i++) {
+        if (i === tocPageIndex) continue;
+        if (pagesText[i]) pagesToMatch.push({ index: i, text: pagesText[i] });
+      }
+      if (pagesToMatch.length) {
+        try {
+          const assignments = await VoxAPI.aiMatchUnitsBatch(units, pagesToMatch);
+          assignments.forEach((a) => matchedByIndex.set(a.index, a.unitNumber));
+        } catch (e) { /* 매칭 실패 시 전부 미배정으로 진행 */ }
+      }
+    }
+
+    return { tocPageIndex, matchedByIndex };
+  }
+
+  async function importPdfFile(file) {
+    updateBatchStatus("PDF를 여는 중입니다...");
+    speak("PDF를 처리하고 있습니다. 잠시만 기다려주세요.");
+
+    // 파일 이름을 책 제목으로 써서, 같은 과목·단원번호를 쓰는 다른 책과 목차에서 구분되게 한다.
+    const bookTitle = file.name.replace(/\.pdf$/i, "").trim() || "가져온 교과서";
+
+    const pdfDoc = await window.PdfImport.openPdf(file);
+    const totalPages = pdfDoc.numPages;
+    const outline = await window.PdfImport.extractOutline(pdfDoc);
+
+    // 1단계: 페이지별 텍스트 확보(텍스트 레이어 우선, 없으면 렌더링 + OCR)
+    const pagesText = [];
+    let spokenMilestone = 0;
+    for (let i = 0; i < totalPages; i++) {
+      let text = await window.PdfImport.extractPageText(pdfDoc, i);
+      if (!text) {
+        try {
+          const dataUrl = await window.PdfImport.renderPageToDataUrl(pdfDoc, i);
+          const result = await VoxAPI.aiOcr(dataUrl.split(",")[1], "image/jpeg");
+          text = (result.text || "").trim() || null;
+        } catch (e) {
+          text = null;
+        }
+      }
+      pagesText.push(text);
+
+      const pct = Math.round(((i + 1) / totalPages) * 100);
+      updateBatchStatus(`${i + 1} / ${totalPages}페이지 처리 중 (${pct}%)`);
+      spokenMilestone = speakMilestone(pct, spokenMilestone);
+    }
+
+    // 과목은 책 전체에서 한 번만 분류한다(페이지마다 다시 분류하지 않음).
+    const subject = await detectSubjectOrDefault(pagesText.find((t) => t && t.trim()));
+
+    // 2단계: 목차 확정. 북마크가 있으면 그대로 쓰고, 없으면 목차로 보이는 페이지를 AI로 파싱해서
+    // 단원을 매칭한다(recognizeUnitsFromPages). 목차 페이지 자체는 "책 내용"이 아니라 AI가 단원을
+    // 인식하는 데만 쓰는 자료이므로, 실제 책 페이지 목록(payload)에는 넣지 않는다.
+    let tocPageIndex = -1;
+    let matchedByIndex = new Map();
+    if (!outline) {
+      const recognized = await recognizeUnitsFromPages(pagesText);
+      tocPageIndex = recognized.tocPageIndex;
+      matchedByIndex = recognized.matchedByIndex;
+    }
+
+    updateBatchStatus("단원을 배정하는 중입니다...");
+    const payload = [];
+    for (let i = 0; i < totalPages; i++) {
+      if (i === tocPageIndex) continue; // 목차 페이지는 건너뛰고 AI 인식에만 활용
+      const text = pagesText[i];
+      if (!text) {
+        payload.push({
+          title: `${bookTitle} ${i + 1}페이지`,
+          subject, bodyText: EMPTY_PAGE_TEXT, unitNumber: null,
+          needsReview: true, reviewReason: "ocr_empty",
+        });
+        continue;
+      }
+      let unitNumber = null;
+      if (outline) {
+        const entry = window.PdfImport.findOutlineEntryForPage(outline, i);
+        unitNumber = entry ? deriveUnitNumber(entry.title, outline.indexOf(entry)) : null;
+      } else if (matchedByIndex.has(i)) {
+        unitNumber = matchedByIndex.get(i);
+      }
+      const needsReview = unitNumber === null;
+      payload.push({
+        title: `${bookTitle} ${i + 1}페이지`,
+        subject, bodyText: text, unitNumber,
+        needsReview, reviewReason: needsReview ? "unit_unmatched" : null,
+      });
+    }
+
+    const created = await VoxAPI.addChaptersBulk(payload, bookTitle);
+    return {
+      total: payload.length,
+      needsReview: payload.filter((p) => p.needsReview).length,
+      unit: "페이지",
+      bookId: created[0] && created[0].bookId,
+    };
+  }
+
+  async function importImageFiles(files) {
+    updateBatchStatus(`0 / ${files.length}장 처리 중`);
+    speak(`이미지 ${files.length}장을 처리하고 있습니다. 잠시만 기다려주세요.`);
+
+    const pagesText = [];
+    let spokenMilestone = 0;
+    for (let i = 0; i < files.length; i++) {
+      let text = null;
+      try {
+        const dataUrl = await readFileAsDataUrl(files[i]);
+        const result = await VoxAPI.aiOcr(dataUrl.split(",")[1], files[i].type || "image/jpeg");
+        text = (result.text || "").trim() || null;
+      } catch (e) {
+        text = null;
+      }
+      pagesText.push(text);
+
+      const pct = Math.round(((i + 1) / files.length) * 100);
+      updateBatchStatus(`${i + 1} / ${files.length}장 처리 중 (${pct}%)`);
+      spokenMilestone = speakMilestone(pct, spokenMilestone);
+    }
+
+    const subject = await detectSubjectOrDefault(pagesText.find((t) => t && t.trim()));
+
+    // 사진 여러 장을 한 번에 넣은 것도 하나의 책으로 취급 — 다른 배치와 목차에서 섞이지 않게 이름을 붙인다.
+    const now = new Date();
+    const stamp = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const bookTitle = `사진으로 넣은 교과서 (${stamp})`;
+
+    // 찍은 사진 중에 목차 페이지가 섞여 있으면(예: 표지 다음에 목차를 찍은 경우) 그걸로 단원을
+    // 인식해서 나머지 사진들을 자동 배정한다. PDF와 똑같은 인식 로직을 그대로 쓴다.
+    updateBatchStatus("단원을 배정하는 중입니다...");
+    const { tocPageIndex, matchedByIndex } = await recognizeUnitsFromPages(pagesText);
+
+    const payload = [];
+    for (let i = 0; i < files.length; i++) {
+      if (i === tocPageIndex) continue; // 목차를 찍은 사진은 책 내용으로 넣지 않는다
+      const text = pagesText[i];
+      const unitNumber = text && matchedByIndex.has(i) ? matchedByIndex.get(i) : null;
+      const needsReview = unitNumber === null;
+      payload.push({
+        title: `${bookTitle} ${i + 1}장`,
+        subject,
+        bodyText: text || EMPTY_PAGE_TEXT,
+        unitNumber,
+        needsReview,
+        reviewReason: needsReview ? (text ? "unit_unmatched" : "ocr_empty") : null,
+      });
+    }
+
+    const created = await VoxAPI.addChaptersBulk(payload, bookTitle);
+    return {
+      total: payload.length,
+      needsReview: payload.filter((p) => p.needsReview).length,
+      unit: "장",
+      bookId: created[0] && created[0].bookId,
+    };
+  }
+
+  $("openBatchImportBtn").addEventListener("click", () => {
+    batchImportPanel.hidden = false;
+    updateBatchStatus("PDF 한 개, 또는 이미지 여러 장을 고르면 한 번에 읽어서 교과서로 만들어요.");
+    speak("여러 페이지 넣기를 열었습니다. 파일로 넣기 버튼을 눌러주세요.");
+    vibrate(20);
+  });
+  $("closeBatchImportBtn").addEventListener("click", () => {
+    batchImportPanel.hidden = true;
+    vibrate(15);
+  });
+  batchPickFileBtn.addEventListener("click", () => batchFileInput.click());
+
+  batchFileInput.addEventListener("change", async () => {
+    const files = Array.from(batchFileInput.files || []);
+    if (!files.length) return;
+    batchPickFileBtn.disabled = true;
+    try {
+      const isSinglePdf = files.length === 1 && files[0].type === "application/pdf";
+      if (isSinglePdf && !window.PdfImport) {
+        throw new Error("PDF 처리 모듈을 불러오지 못했어요");
+      }
+      const result = isSinglePdf ? await importPdfFile(files[0]) : await importImageFiles(files);
+
+      state.chapters = await VoxAPI.listChapters();
+      renderAllChapters();
+      batchImportPanel.hidden = true;
+      openLibraryPanel(result.bookId);
+      const summary = `총 ${result.total}${result.unit} 중 ${result.needsReview}${result.unit}는 확인이 필요합니다.`;
+      updateBatchStatus(summary);
+      speak(summary);
+      vibrate([15, 40, 15]);
+    } catch (err) {
+      updateBatchStatus("파일을 처리하는 중 오류가 발생했어요: " + err.message);
+      speak("파일을 처리하는 중 오류가 발생했습니다. 인터넷 연결과 서버 상태를 확인해주세요.");
+      vibrate(200);
+    } finally {
+      batchPickFileBtn.disabled = false;
+      batchFileInput.value = "";
+    }
+  });
+
+  // ---- 교과서 목차 (Chapter 데이터를 과목·단원으로 묶어 보여주는 화면) ----
+
+  // 여러 페이지 넣기(배치 가져오기)로 들어온, "책의 한 페이지"에 해당하는 단원인지 판단.
+  // 시드 단원이나 사진 한 장으로 추가한 단원(단일 촬영)은 false — 목차에서 개별 카드로 그대로 보임.
+  function chapterBelongsToBook(chapter) {
+    return !!chapter.bookId;
+  }
+
+  // 같은 과목·단원번호를 쓰는 "다른 책"이 섞이지 않도록, bookId가 있으면 책 단위로,
+  // 없으면(시드 단원, 사진 한 장 추가 등 예전 방식 데이터) 과목 단위로 묶는다.
+  function groupKey(chapter) {
+    const unitNumber = chapter.unitNumber ?? null;
+    const unitPart = unitNumber === null ? "" : unitNumber;
+    if (chapter.bookId) return `book:${chapter.bookId}|${unitPart}`;
+    return `subj:${chapter.subject || "기타"}|${unitPart}`;
+  }
+
+  function sortGroupChapters(chapters) {
+    return chapters.slice().sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+  }
+
+  function sortGroups(groups) {
+    const subjectRank = (s) => {
+      const i = SUBJECT_LIST.indexOf(s);
+      return i === -1 ? SUBJECT_LIST.length : i;
+    };
+    return groups.sort((a, b) => {
+      if (a.subject !== b.subject) return subjectRank(a.subject) - subjectRank(b.subject) || a.subject.localeCompare(b.subject);
+      const at = a.bookTitle || "", bt = b.bookTitle || "";
+      if (at !== bt) return at.localeCompare(bt);
+      // 책 단위 그룹(buildBookGroups)에는 unitNumber가 아예 없을 수 있으니 0으로 취급한다.
+      const au = a.unitNumber ?? 0, bu = b.unitNumber ?? 0;
+      if (au === bu) return 0;
+      if (a.unitNumber == null) return 1;
+      if (b.unitNumber == null) return -1;
+      return au - bu;
+    });
+  }
+
+  function groupChapters(chapters) {
+    const groups = new Map();
+    chapters.forEach((chapter) => {
+      const key = groupKey(chapter);
+      if (!groups.has(key)) {
+        groups.set(key, {
+          subject: chapter.subject || "기타",
+          unitNumber: chapter.unitNumber ?? null,
+          bookId: chapter.bookId || null,
+          bookTitle: chapter.bookTitle || null,
+          chapters: [],
+        });
+      }
+      groups.get(key).chapters.push(chapter);
+    });
+    return sortGroups([...groups.values()]);
+  }
+
+  // 메인 목차 카드 그리드용: 단원별로 쪼개지 않고 "책" 단위로만 폴더 카드를 만든다.
+  // 단원 목록은 그 폴더를 눌렀을 때 "교과서 목차 열기" 화면에서 본다.
+  function buildTocFolders() {
+    return buildBookGroups();
+  }
+
+  // 책(bookId) 단위로 한 번 더 묶는다 — 목차 열기의 1단계(책 목록)용.
+  function buildBookGroups() {
+    const groups = new Map();
+    state.chapters.filter((c) => c.bookId).forEach((chapter) => {
+      if (!groups.has(chapter.bookId)) {
+        groups.set(chapter.bookId, {
+          bookId: chapter.bookId,
+          bookTitle: chapter.bookTitle || "이름 없는 교과서",
+          subject: chapter.subject || "기타",
+          chapters: [],
+        });
+      }
+      groups.get(chapter.bookId).chapters.push(chapter);
+    });
+    return [...groups.values()].sort((a, b) => a.bookTitle.localeCompare(b.bookTitle));
+  }
+
+  // 교과서 목차는 2단계: 먼저 어떤 책인지 고르고("책 목록"), 고른 책 안에서 단원별로 본다.
+  // (한 과목·단원번호를 여러 책이 같이 쓸 수 있어서, 책을 먼저 고르지 않으면 어느 책 목차인지 알 수 없다.)
+  function renderLibraryPanel() {
+    const listEl = $("libraryUnitList");
+    const backBtn = $("libraryBackToBooksBtn");
+    listEl.innerHTML = "";
+
+    if (!state.libraryOpenBookId) {
+      backBtn.hidden = true;
+      const books = buildBookGroups();
+      books.forEach((book) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "icon-btn";
+        btn.setAttribute("role", "listitem");
+        const flaggedInBook = book.chapters.filter((c) => c.needsReview).length;
+        btn.textContent = `📁 ${book.bookTitle} — ${book.subject} · ${book.chapters.length}페이지`
+          + (flaggedInBook ? ` · 확인 필요 ${flaggedInBook}건` : "");
+        btn.addEventListener("click", () => {
+          state.libraryOpenBookId = book.bookId;
+          renderLibraryPanel();
+        });
+        listEl.appendChild(btn);
+      });
+
+      const flagged = state.chapters.filter((c) => chapterBelongsToBook(c) && c.needsReview);
+      $("librarySummary").textContent = books.length
+        ? `가져온 교과서 ${books.length}권 · 확인 필요 ${flagged.length}건`
+        : "아직 여러 페이지 넣기로 가져온 교과서가 없어요. '교과서 만들기'에서 추가해보세요.";
+      $("libraryFlaggedBox").style.display = flagged.length > 0 ? "" : "none";
+      $("libraryFlaggedCount").textContent = String(flagged.length);
+      return;
+    }
+
+    // ---- 2단계: 고른 책의 단원 목록 ----
+    backBtn.hidden = false;
+    const book = buildBookGroups().find((b) => b.bookId === state.libraryOpenBookId);
+    if (!book) { state.libraryOpenBookId = null; renderLibraryPanel(); return; }
+
+    groupChapters(book.chapters).forEach((group) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "icon-btn";
+      btn.setAttribute("role", "listitem");
+      const unitLabel = group.unitNumber === null ? "미배정" : `${group.unitNumber}단원`;
+      btn.textContent = `${unitLabel} — ${group.chapters.length}페이지`;
+      btn.addEventListener("click", () => {
+        setCurrentChapter(sortGroupChapters(group.chapters)[0].id);
+        libraryPanel.hidden = true;
+        showToast(`${book.bookTitle} · ${unitLabel}으로 이동`);
+      });
+      listEl.appendChild(btn);
+    });
+
+    const flaggedInBook = book.chapters.filter((c) => c.needsReview);
+    $("librarySummary").textContent = `${book.bookTitle} · ${book.chapters.length}페이지 · 확인 필요 ${flaggedInBook.length}건`;
+    $("libraryFlaggedBox").style.display = flaggedInBook.length > 0 ? "" : "none";
+    $("libraryFlaggedCount").textContent = String(flaggedInBook.length);
+  }
+
+  // bookId를 주면 그 책의 단원 목록으로 바로 들어가고, 안 주면 책 목록부터 보여준다.
+  function openLibraryPanel(bookId) {
+    state.libraryOpenBookId = bookId || null;
+    renderLibraryPanel();
+    libraryPanel.hidden = false;
+  }
+
+  $("openLibraryBtn").addEventListener("click", () => {
+    openLibraryPanel();
+    const books = buildBookGroups().length;
+    speak(`교과서 목차입니다. 가져온 책이 ${books}권 있습니다. 책을 눌러 목차를 확인하세요.`);
+    vibrate(20);
+  });
+  $("closeLibraryBtn").addEventListener("click", () => {
+    libraryPanel.hidden = true;
+    vibrate(15);
+  });
+  $("libraryBackToBooksBtn").addEventListener("click", () => {
+    state.libraryOpenBookId = null;
+    renderLibraryPanel();
+    vibrate(15);
+  });
+  // 확인 필요 목록은 별도 검수 화면을 만들지 않고, 첫 번째 항목으로 바로 이동시킨다.
+  // 책 목록 단계에서 누르면 전체에서, 책 상세 단계에서 누르면 그 책 안에서만 찾는다.
+  $("libraryFlaggedBtn").addEventListener("click", () => {
+    const pool = state.libraryOpenBookId
+      ? state.chapters.filter((c) => c.bookId === state.libraryOpenBookId)
+      : state.chapters;
+    const first = pool.find((c) => c.needsReview);
+    if (!first) { showToast("확인이 필요한 항목이 없어요"); speak("확인이 필요한 항목이 없습니다."); return; }
+    setCurrentChapter(first.id);
+    libraryPanel.hidden = true;
+    showToast("확인이 필요한 항목으로 이동");
+  });
 
   // ---- 초기 모드 표시 동기화 ----
   document.querySelectorAll(".seg button").forEach((b) => {

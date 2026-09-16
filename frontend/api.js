@@ -72,6 +72,13 @@ const VoxAPI = (() => {
       request("/api/chapters", { method: "POST", body: JSON.stringify({ title, subject, bodyText }) })
         .then((d) => d.chapter),
 
+    updateChapter: (id, patch) =>
+      request("/api/chapters/" + encodeURIComponent(id), { method: "PATCH", body: JSON.stringify(patch) })
+        .then((d) => d.chapter),
+    addChaptersBulk: (chapters, bookTitle) =>
+      request("/api/chapters/bulk", { method: "POST", body: JSON.stringify({ chapters, bookTitle }) })
+        .then((d) => d.chapters),
+
     listBookmarks: () => request("/api/bookmarks").then((d) => d.bookmarks),
     addBookmark: (chapterId) =>
       request("/api/bookmarks", { method: "POST", body: JSON.stringify({ chapterId }) }),
@@ -102,5 +109,16 @@ const VoxAPI = (() => {
         .then((d) => d.question),
     aiGradeQuiz: (question, chapterText, studentAnswer) =>
       request("/api/ai/quiz/grade", { method: "POST", body: JSON.stringify({ question, chapterText, studentAnswer }) }),
+
+    aiParseGraphEquation: (text) =>
+      request("/api/ai/graph-equation", { method: "POST", body: JSON.stringify({ text }) }),
+    aiExtractToc: (text) =>
+      request("/api/ai/toc-extract", { method: "POST", body: JSON.stringify({ text }) })
+        .then((d) => d.units),
+    aiMatchUnit: (units, pageText) =>
+      request("/api/ai/match-unit", { method: "POST", body: JSON.stringify({ units, pageText }) }),
+    aiMatchUnitsBatch: (units, pages) =>
+      request("/api/ai/match-units-batch", { method: "POST", body: JSON.stringify({ units, pages }) })
+        .then((d) => d.assignments),
   };
 })();

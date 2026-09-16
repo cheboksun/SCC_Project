@@ -34,6 +34,12 @@ model Chapter {
   orderIndex  Int      @default(0)
   createdAt   DateTime @default(now())
 
+  unitNumber   Int?
+  needsReview  Boolean  @default(false)
+  reviewReason String?
+  bookId       String?  // 여러 페이지 넣기(배치 가져오기) 한 번을 하나의 "책"으로 묶는 식별자
+  bookTitle    String?  // 그 책의 표시용 이름(예: PDF 파일명)
+
   bookmarks Bookmark[]
   replays   ReplayLog[]
   quizzes   QuizAttempt[]
