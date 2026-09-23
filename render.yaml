@@ -22,3 +22,10 @@ services:
     rootDir: frontend
     buildCommand: ""
     staticPublishPath: .
+    headers:
+      - path: /*.js
+        name: Cache-Control
+        value: no-cache
+      - path: /*.css
+        name: Cache-Control
+        value: no-cache

@@ -50,6 +50,8 @@ router.post("/", catchAsync(async (req, res) => {
 
 const bulkSchema = z.object({
   bookTitle: z.string().min(1).max(200).optional(),
+  importFingerprint: z.string().min(1).max(128).nullish(),
+  force: z.boolean().optional(),
   chapters: z
     .array(
       z.object({
@@ -57,6 +59,7 @@ const bulkSchema = z.object({
         subject: z.string().min(1).max(20).nullish(),
         bodyText: z.string().min(1),
         unitNumber: z.number().int().nullish(),
+        unitTitle: z.string().max(200).nullish(),
         needsReview: z.boolean().optional(),
         reviewReason: z.string().max(100).nullish(),
       })
@@ -73,7 +76,23 @@ router.post("/bulk", catchAsync(async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0].message });
   }
-  const { chapters: items, bookTitle } = parsed.data;
+  const { chapters: items, bookTitle, importFingerprint, force } = parsed.data;
+
+  // 같은 파일을 실수로 두 번 가져오는 경우를 막는다. 일부러 다시 넣고 싶으면 force로 넘어올 수 있음
+  if (importFingerprint && force !== true) {
+    const existing = await prisma.chapter.findFirst({
+      where: { userId: req.userId, importFingerprint },
+    });
+    if (existing) {
+      return res.status(409).json({
+        error: "이미 가져온 파일과 같아 보여요",
+        duplicate: true,
+        bookId: existing.bookId,
+        bookTitle: existing.bookTitle,
+      });
+    }
+  }
+
   const bookId = crypto.randomUUID();
 
   // slug/orderIndex 카운터는 한 번만 읽고 항목마다 증가시켜야 유니크 제약에 걸리지 않음
@@ -91,10 +110,12 @@ router.post("/bulk", catchAsync(async (req, res) => {
           source: "ocr",
           orderIndex: 1000 + count + i,
           unitNumber: item.unitNumber ?? null,
+          unitTitle: item.unitTitle ?? null,
           needsReview: item.needsReview ?? false,
           reviewReason: item.reviewReason ?? null,
           bookId,
           bookTitle: bookTitle ?? null,
+          importFingerprint: importFingerprint ?? null,
         },
       })
     )
@@ -107,6 +128,7 @@ const patchSchema = z
     bodyText: z.string().min(1).optional(),
     subject: z.string().min(1).max(20).nullish(),
     unitNumber: z.number().int().nullish(),
+    unitTitle: z.string().max(200).nullish(),
     needsReview: z.boolean().optional(),
     reviewReason: z.string().max(100).nullish(),
   })

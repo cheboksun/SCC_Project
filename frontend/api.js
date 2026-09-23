@@ -50,7 +50,10 @@ const VoxAPI = (() => {
 
     if (!response.ok) {
       if (response.status === 401) clearSession();
-      throw new Error(data.error || "요청이 실패했어요 (status " + response.status + ")");
+      const err = new Error(data.error || "요청이 실패했어요 (status " + response.status + ")");
+      err.status = response.status;
+      err.data = data;
+      throw err;
     }
     return data;
   }
@@ -75,9 +78,11 @@ const VoxAPI = (() => {
     updateChapter: (id, patch) =>
       request("/api/chapters/" + encodeURIComponent(id), { method: "PATCH", body: JSON.stringify(patch) })
         .then((d) => d.chapter),
-    addChaptersBulk: (chapters, bookTitle) =>
-      request("/api/chapters/bulk", { method: "POST", body: JSON.stringify({ chapters, bookTitle }) })
-        .then((d) => d.chapters),
+    addChaptersBulk: (chapters, bookTitle, opts = {}) =>
+      request("/api/chapters/bulk", {
+        method: "POST",
+        body: JSON.stringify({ chapters, bookTitle, importFingerprint: opts.importFingerprint, force: opts.force }),
+      }).then((d) => d.chapters),
 
     listBookmarks: () => request("/api/bookmarks").then((d) => d.bookmarks),
     addBookmark: (chapterId) =>

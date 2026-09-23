@@ -215,7 +215,7 @@ const SPECIAL_BY_SLUG = {
     const siblings = sortGroupChapters(state.chapters.filter((c) => groupKey(c) === groupKey(chapter)));
     if (siblings.length <= 1) return "";
     const idx = siblings.findIndex((c) => c.id === chapter.id);
-    const unitLabel = chapter.unitNumber == null ? "미배정" : `${chapter.unitNumber}단원`;
+    const unitLabel = chapter.unitTitle || (chapter.unitNumber == null ? "미배정" : `${chapter.unitNumber}단원`);
     const label = chapter.bookTitle ? `${chapter.bookTitle} · ${unitLabel}` : `${chapter.subject || ""} ${unitLabel}`;
     return `<div class="guide-line group-nav" id="group-nav-${chapter.id}">
         📁 ${label} · ${idx + 1}/${siblings.length}페이지
@@ -277,6 +277,10 @@ const SPECIAL_BY_SLUG = {
   function renderReviewBadgeHtml(chapter) {
     if (!chapter.needsReview) return "";
     if (chapter.reviewReason === "unit_unmatched" && chapter.bookId) {
+      const titleByUnit = new Map();
+      state.chapters
+        .filter((c) => c.bookId === chapter.bookId && c.unitNumber != null)
+        .forEach((c) => { if (c.unitTitle && !titleByUnit.has(c.unitNumber)) titleByUnit.set(c.unitNumber, c.unitTitle); });
       const knownUnits = [...new Set(
         state.chapters
           .filter((c) => c.bookId === chapter.bookId && c.unitNumber != null)
@@ -285,7 +289,7 @@ const SPECIAL_BY_SLUG = {
       const picker = knownUnits.length
         ? `<select id="review-unit-input-${chapter.id}" aria-label="단원 선택">
              <option value="">미배정으로 두기</option>
-             ${knownUnits.map((n) => `<option value="${n}">${n}단원</option>`).join("")}
+             ${knownUnits.map((n) => `<option value="${n}">${titleByUnit.get(n) || `${n}단원`}</option>`).join("")}
            </select>`
         : `<input type="number" id="review-unit-input-${chapter.id}" min="1" step="1"
              placeholder="단원 번호" style="width:88px;" aria-label="단원 번호 입력">`;
@@ -407,9 +411,16 @@ const SPECIAL_BY_SLUG = {
       showToast("단원 번호는 숫자로 입력해주세요");
       return;
     }
+    // 같은 책의 다른 페이지가 이미 이 단원의 제목을 알고 있으면 같이 가져온다 —
+    // 직접 지정한 페이지도 번호만 덩그러니 남지 않고 제대로 된 단원 제목으로 보이게.
+    const sibling = unitNumber == null ? null : state.chapters.find(
+      (c) => c.bookId === chapter.bookId && c.unitNumber === unitNumber && c.unitTitle
+    );
+    const unitTitle = sibling ? sibling.unitTitle : null;
     try {
-      await VoxAPI.updateChapter(id, { unitNumber, needsReview: false, reviewReason: null });
+      await VoxAPI.updateChapter(id, { unitNumber, unitTitle, needsReview: false, reviewReason: null });
       chapter.unitNumber = unitNumber;
+      chapter.unitTitle = unitTitle;
       chapter.needsReview = false;
       chapter.reviewReason = null;
       const row = $("review-row-" + id);
@@ -997,6 +1008,14 @@ const SPECIAL_BY_SLUG = {
   });
 
   const alwaysListenBtn = $("alwaysListenBtn");
+  // 눌러봐야 알 수 있게 두지 않고, 지원하지 않는 브라우저면 처음부터 끄고 이유를 붙여둔다.
+  if (!vcSupported()) {
+    alwaysListenBtn.disabled = true;
+    alwaysListenBtn.textContent = "🎙 항상 듣기 (이 브라우저 미지원)";
+    alwaysListenBtn.title = "이 브라우저는 음성 인식을 지원하지 않아요. 크롬이나 엣지에서 사용해 주세요.";
+    alwaysListenBtn.setAttribute("aria-label", "항상 듣기 모드 — 이 브라우저는 음성 인식을 지원하지 않습니다");
+    alwaysListenStatus.textContent = "이 브라우저는 음성 인식을 지원하지 않아 '항상 듣기'를 쓸 수 없어요.";
+  }
   alwaysListenBtn.addEventListener("click", () => {
     if (!vcSupported()) { showToast("이 브라우저는 음성 인식을 지원하지 않아요"); return; }
     alwaysListenOn = !alwaysListenOn;
@@ -1372,11 +1391,58 @@ const SPECIAL_BY_SLUG = {
   const batchImportStatus = $("batchImportStatus");
   const batchPickFileBtn = $("batchPickFileBtn");
   const batchFileInput = $("batchFileInput");
+  const cancelBatchImportBtn = $("cancelBatchImportBtn");
   const libraryPanel = $("libraryPanel");
 
   const EMPTY_PAGE_TEXT = "(이 페이지에서는 글자를 읽지 못했어요)";
 
+  // 가져오기 도중 사용자가 "취소"를 누르면 true가 되고, 각 루프가 다음 반복 전에 확인해서 빠져나온다.
+  let batchImportCancelled = false;
+
   function updateBatchStatus(text) { batchImportStatus.textContent = text; }
+
+  function notifyImportCancelled() {
+    updateBatchStatus("가져오기를 취소했습니다");
+    showToast("가져오기를 취소했습니다");
+    speak("가져오기를 취소했습니다.");
+    vibrate(80);
+  }
+
+  function toHex(buffer) {
+    return Array.from(new Uint8Array(buffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function sha256Hex(input) {
+    const data = typeof input === "string" ? new TextEncoder().encode(input) : input;
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    return toHex(digest);
+  }
+
+  // 파일을 지웠다 다시 넣거나 이름만 바꿔도 같은 파일로 알아보도록 내용을 해시한다.
+  async function fingerprintPdf(file) {
+    try { return await sha256Hex(await file.arrayBuffer()); } catch (e) { return null; }
+  }
+
+  // 사진 여러 장은 내용을 다 해시할 필요 없이 (이름+크기+수정시각) 조합이면 충분하다.
+  async function fingerprintImages(files) {
+    try {
+      const parts = Array.from(files).map((f) => `${f.name}|${f.size}|${f.lastModified}`).join("\n");
+      return await sha256Hex(parts);
+    } catch (e) { return null; }
+  }
+
+  // 같은 파일을 이미 가져왔다면 백엔드가 409(duplicate)로 막는다. 사용자가 원하면 force로 다시 보낸다.
+  // 사용자가 거절하면 null을 돌려줘서 호출부가 취소와 같은 경로로 빠지게 한다.
+  async function sendChaptersBulk(payload, bookTitle, importFingerprint) {
+    try {
+      return await VoxAPI.addChaptersBulk(payload, bookTitle, { importFingerprint });
+    } catch (e) {
+      if (!(e.status === 409 && e.data && e.data.duplicate)) throw e;
+      speak("이미 가져온 파일과 같아 보입니다. 그래도 추가할까요?");
+      if (!confirm("이미 가져온 파일과 같아 보여요. 그래도 추가할까요?")) return null;
+      return await VoxAPI.addChaptersBulk(payload, bookTitle, { importFingerprint, force: true });
+    }
+  }
 
   function readFileAsDataUrl(file) {
     return new Promise((resolve, reject) => {
@@ -1411,7 +1477,7 @@ const SPECIAL_BY_SLUG = {
   async function recognizeUnitsFromPages(pagesText) {
     // 문장 중간에 "목차"라는 단어가 우연히 들어간 페이지(표지 소개 문구 등)까지 걸리지 않도록,
     // 페이지가 "목차"/"차례"라는 말로 시작할 때만 진짜 목차 페이지로 인정한다.
-    const tocPageIndex = pagesText.slice(0, 3).findIndex((t) => t && /^(목차|차례)/.test(t.trim()));
+    let tocPageIndex = pagesText.slice(0, 3).findIndex((t) => t && /^(목차|차례)/.test(t.trim()));
     let units = null;
     if (tocPageIndex !== -1) {
       try {
@@ -1419,6 +1485,24 @@ const SPECIAL_BY_SLUG = {
         if (parsed && parsed.length) units = parsed;
       } catch (e) { /* 목차 파싱 실패 시 목차 없이 진행 */ }
     }
+
+    // "목차"라는 말로 시작하지 않는 목차 페이지도 있다. 엄격한 규칙이 아무것도 못 찾았을 때만,
+    // 앞쪽 5페이지를 한 장씩 AI에 물어보고 단원이 2개 이상 나오는 첫 페이지를 목차로 인정한다.
+    // (Gemini 무료 할당량이 빠듯해서 병렬로 다 던지지 않고 성공하는 즉시 멈춘다.)
+    if (!units) {
+      for (let i = 0; i < Math.min(5, pagesText.length); i++) {
+        if (!pagesText[i]) continue;
+        try {
+          const parsed = await VoxAPI.aiExtractToc(pagesText[i]);
+          if (parsed && parsed.length >= 2) { units = parsed; tocPageIndex = i; break; }
+        } catch (e) { /* 이 페이지는 목차가 아니라고 보고 다음 페이지로 */ }
+      }
+    }
+
+    const unitTitleByNumber = new Map();
+    (units || []).forEach((u) => {
+      if (u && u.unitNumber != null && u.unitTitle) unitTitleByNumber.set(u.unitNumber, u.unitTitle);
+    });
 
     const matchedByIndex = new Map();
     if (units && units.length) {
@@ -1435,7 +1519,7 @@ const SPECIAL_BY_SLUG = {
       }
     }
 
-    return { tocPageIndex, matchedByIndex };
+    return { tocPageIndex, matchedByIndex, unitTitleByNumber };
   }
 
   async function importPdfFile(file) {
@@ -1444,6 +1528,7 @@ const SPECIAL_BY_SLUG = {
 
     // 파일 이름을 책 제목으로 써서, 같은 과목·단원번호를 쓰는 다른 책과 목차에서 구분되게 한다.
     const bookTitle = file.name.replace(/\.pdf$/i, "").trim() || "가져온 교과서";
+    const importFingerprint = await fingerprintPdf(file);
 
     const pdfDoc = await window.PdfImport.openPdf(file);
     const totalPages = pdfDoc.numPages;
@@ -1453,6 +1538,7 @@ const SPECIAL_BY_SLUG = {
     const pagesText = [];
     let spokenMilestone = 0;
     for (let i = 0; i < totalPages; i++) {
+      if (batchImportCancelled) return null;
       let text = await window.PdfImport.extractPageText(pdfDoc, i);
       if (!text) {
         try {
@@ -1478,41 +1564,50 @@ const SPECIAL_BY_SLUG = {
     // 인식하는 데만 쓰는 자료이므로, 실제 책 페이지 목록(payload)에는 넣지 않는다.
     let tocPageIndex = -1;
     let matchedByIndex = new Map();
+    let unitTitleByNumber = new Map();
     if (!outline) {
       const recognized = await recognizeUnitsFromPages(pagesText);
       tocPageIndex = recognized.tocPageIndex;
       matchedByIndex = recognized.matchedByIndex;
+      unitTitleByNumber = recognized.unitTitleByNumber;
     }
 
     updateBatchStatus("단원을 배정하는 중입니다...");
     const payload = [];
     for (let i = 0; i < totalPages; i++) {
+      if (batchImportCancelled) return null;
       if (i === tocPageIndex) continue; // 목차 페이지는 건너뛰고 AI 인식에만 활용
       const text = pagesText[i];
       if (!text) {
         payload.push({
           title: `${bookTitle} ${i + 1}페이지`,
-          subject, bodyText: EMPTY_PAGE_TEXT, unitNumber: null,
+          subject, bodyText: EMPTY_PAGE_TEXT, unitNumber: null, unitTitle: null,
           needsReview: true, reviewReason: "ocr_empty",
         });
         continue;
       }
       let unitNumber = null;
+      let unitTitle = null;
       if (outline) {
         const entry = window.PdfImport.findOutlineEntryForPage(outline, i);
-        unitNumber = entry ? deriveUnitNumber(entry.title, outline.indexOf(entry)) : null;
+        if (entry) {
+          unitNumber = deriveUnitNumber(entry.title, outline.indexOf(entry));
+          unitTitle = entry.title || null;
+        }
       } else if (matchedByIndex.has(i)) {
         unitNumber = matchedByIndex.get(i);
+        unitTitle = unitTitleByNumber.get(unitNumber) || null;
       }
       const needsReview = unitNumber === null;
       payload.push({
         title: `${bookTitle} ${i + 1}페이지`,
-        subject, bodyText: text, unitNumber,
+        subject, bodyText: text, unitNumber, unitTitle,
         needsReview, reviewReason: needsReview ? "unit_unmatched" : null,
       });
     }
 
-    const created = await VoxAPI.addChaptersBulk(payload, bookTitle);
+    const created = await sendChaptersBulk(payload, bookTitle, importFingerprint);
+    if (!created) return null;
     return {
       total: payload.length,
       needsReview: payload.filter((p) => p.needsReview).length,
@@ -1524,10 +1619,12 @@ const SPECIAL_BY_SLUG = {
   async function importImageFiles(files) {
     updateBatchStatus(`0 / ${files.length}장 처리 중`);
     speak(`이미지 ${files.length}장을 처리하고 있습니다. 잠시만 기다려주세요.`);
+    const importFingerprint = await fingerprintImages(files);
 
     const pagesText = [];
     let spokenMilestone = 0;
     for (let i = 0; i < files.length; i++) {
+      if (batchImportCancelled) return null;
       let text = null;
       try {
         const dataUrl = await readFileAsDataUrl(files[i]);
@@ -1553,10 +1650,11 @@ const SPECIAL_BY_SLUG = {
     // 찍은 사진 중에 목차 페이지가 섞여 있으면(예: 표지 다음에 목차를 찍은 경우) 그걸로 단원을
     // 인식해서 나머지 사진들을 자동 배정한다. PDF와 똑같은 인식 로직을 그대로 쓴다.
     updateBatchStatus("단원을 배정하는 중입니다...");
-    const { tocPageIndex, matchedByIndex } = await recognizeUnitsFromPages(pagesText);
+    const { tocPageIndex, matchedByIndex, unitTitleByNumber } = await recognizeUnitsFromPages(pagesText);
 
     const payload = [];
     for (let i = 0; i < files.length; i++) {
+      if (batchImportCancelled) return null;
       if (i === tocPageIndex) continue; // 목차를 찍은 사진은 책 내용으로 넣지 않는다
       const text = pagesText[i];
       const unitNumber = text && matchedByIndex.has(i) ? matchedByIndex.get(i) : null;
@@ -1566,12 +1664,14 @@ const SPECIAL_BY_SLUG = {
         subject,
         bodyText: text || EMPTY_PAGE_TEXT,
         unitNumber,
+        unitTitle: unitNumber === null ? null : (unitTitleByNumber.get(unitNumber) || null),
         needsReview,
         reviewReason: needsReview ? (text ? "unit_unmatched" : "ocr_empty") : null,
       });
     }
 
-    const created = await VoxAPI.addChaptersBulk(payload, bookTitle);
+    const created = await sendChaptersBulk(payload, bookTitle, importFingerprint);
+    if (!created) return null;
     return {
       total: payload.length,
       needsReview: payload.filter((p) => p.needsReview).length,
@@ -1591,17 +1691,26 @@ const SPECIAL_BY_SLUG = {
     vibrate(15);
   });
   batchPickFileBtn.addEventListener("click", () => batchFileInput.click());
+  cancelBatchImportBtn.addEventListener("click", () => {
+    batchImportCancelled = true;
+    updateBatchStatus("취소하는 중입니다...");
+    vibrate(30);
+  });
 
   batchFileInput.addEventListener("change", async () => {
     const files = Array.from(batchFileInput.files || []);
     if (!files.length) return;
+    batchImportCancelled = false;
     batchPickFileBtn.disabled = true;
+    cancelBatchImportBtn.hidden = false;
     try {
       const isSinglePdf = files.length === 1 && files[0].type === "application/pdf";
       if (isSinglePdf && !window.PdfImport) {
         throw new Error("PDF 처리 모듈을 불러오지 못했어요");
       }
       const result = isSinglePdf ? await importPdfFile(files[0]) : await importImageFiles(files);
+      // null = 사용자가 취소했거나, 중복 확인에서 추가하지 않기로 했음 — 아무것도 만들지 않았다.
+      if (!result) { notifyImportCancelled(); return; }
 
       state.chapters = await VoxAPI.listChapters();
       renderAllChapters();
@@ -1617,6 +1726,7 @@ const SPECIAL_BY_SLUG = {
       vibrate(200);
     } finally {
       batchPickFileBtn.disabled = false;
+      cancelBatchImportBtn.hidden = true;
       batchFileInput.value = "";
     }
   });
@@ -1668,6 +1778,7 @@ const SPECIAL_BY_SLUG = {
         groups.set(key, {
           subject: chapter.subject || "기타",
           unitNumber: chapter.unitNumber ?? null,
+          unitTitle: chapter.unitTitle || null,
           bookId: chapter.bookId || null,
           bookTitle: chapter.bookTitle || null,
           chapters: [],
@@ -1745,7 +1856,7 @@ const SPECIAL_BY_SLUG = {
       btn.type = "button";
       btn.className = "icon-btn";
       btn.setAttribute("role", "listitem");
-      const unitLabel = group.unitNumber === null ? "미배정" : `${group.unitNumber}단원`;
+      const unitLabel = group.unitTitle || (group.unitNumber === null ? "미배정" : `${group.unitNumber}단원`);
       btn.textContent = `${unitLabel} — ${group.chapters.length}페이지`;
       btn.addEventListener("click", () => {
         setCurrentChapter(sortGroupChapters(group.chapters)[0].id);
