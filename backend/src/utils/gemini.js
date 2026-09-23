@@ -7,7 +7,28 @@ const GEMINI_URL =
 // 로딩 상태로 영원히 멈춰버린다. 45초를 넘기면 명확한 에러로 실패시킨다.
 const GEMINI_TIMEOUT_MS = 45000;
 
+// "high demand"(503)나 순간 할당량 초과(429)는 몇 초 뒤 다시 보내면 대부분 성공한다.
+// 여러 페이지를 연달아 인식할 때 이 일시 오류 한 번에 페이지가 통째로 빈 페이지가 되지 않도록 재시도한다.
+const RETRY_DELAYS_MS = [2000, 5000];
+const RETRYABLE_STATUS = new Set([429, 500, 503]);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function callGeminiParts(systemPrompt, parts) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callGeminiOnce(systemPrompt, parts);
+    } catch (err) {
+      if (!err.retryable || attempt >= RETRY_DELAYS_MS.length) throw err;
+      console.warn(`[ai] 일시 오류로 재시도 (${attempt + 1}/${RETRY_DELAYS_MS.length}): ${err.message}`);
+      await sleep(RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+async function callGeminiOnce(systemPrompt, parts) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("서버에 GEMINI_API_KEY가 설정되어 있지 않아요");
@@ -48,7 +69,9 @@ async function callGeminiParts(systemPrompt, parts) {
 
   if (!response.ok || data.error) {
     const msg = (data.error && data.error.message) || "HTTP " + response.status;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.retryable = RETRYABLE_STATUS.has(response.status) || /high demand|overloaded/i.test(msg);
+    throw err;
   }
 
   const candidate = (data.candidates || [])[0];

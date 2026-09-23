@@ -1522,160 +1522,175 @@ const SPECIAL_BY_SLUG = {
     return { tocPageIndex, matchedByIndex, unitTitleByNumber };
   }
 
-  async function importPdfFile(file) {
-    updateBatchStatus("PDF를 여는 중입니다...");
-    speak("PDF를 처리하고 있습니다. 잠시만 기다려주세요.");
+  function isPdfFile(file) {
+    return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  }
 
-    // 파일 이름을 책 제목으로 써서, 같은 과목·단원번호를 쓰는 다른 책과 목차에서 구분되게 한다.
-    const bookTitle = file.name.replace(/\.pdf$/i, "").trim() || "가져온 교과서";
-    const importFingerprint = await fingerprintPdf(file);
+  // 우리 서버의 분당 요청 제한(429)이나 AI 일시 오류(502)로 실패한 페이지는 잠깐 기다렸다가 다시 보낸다.
+  // (예전에는 한 번 실패하면 바로 "글자를 못 읽은 페이지"가 돼서, 여러 장을 넣으면 인식이 자주 빠졌다.)
+  const OCR_RETRY_DELAYS_MS = [3000, 8000];
+  async function ocrWithRetry(imageBase64, mimeType) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await VoxAPI.aiOcr(imageBase64, mimeType);
+      } catch (e) {
+        const retryable = !e.status || e.status === 429 || e.status >= 500;
+        if (!retryable || batchImportCancelled || attempt >= OCR_RETRY_DELAYS_MS.length) throw e;
+        await new Promise((r) => setTimeout(r, e.status === 429 ? 20000 : OCR_RETRY_DELAYS_MS[attempt]));
+      }
+    }
+  }
 
-    const pdfDoc = await window.PdfImport.openPdf(file);
-    const totalPages = pdfDoc.numPages;
-    const outline = await window.PdfImport.extractOutline(pdfDoc);
+  async function ocrText(imageBase64, mimeType) {
+    try {
+      const result = await ocrWithRetry(imageBase64, mimeType);
+      return (result.text || "").trim() || null;
+    } catch (e) {
+      return null;
+    }
+  }
 
-    // 1단계: 페이지별 텍스트 확보(텍스트 레이어 우선, 없으면 렌더링 + OCR)
-    const pagesText = [];
+  async function fingerprintFiles(files) {
+    if (files.length === 1 && isPdfFile(files[0])) return fingerprintPdf(files[0]);
+    if (!files.some(isPdfFile)) return fingerprintImages(files);
+    try {
+      const parts = await Promise.all(files.map((f) =>
+        isPdfFile(f) ? fingerprintPdf(f) : `${f.name}|${f.size}|${f.lastModified}`));
+      return await sha256Hex(parts.join("\n"));
+    } catch (e) { return null; }
+  }
+
+  // 파일 이름을 책 제목으로 써서, 같은 과목·단원번호를 쓰는 다른 책과 목차에서 구분되게 한다.
+  function bookTitleForFiles(files) {
+    const baseName = (f) => f.name.replace(/\.[^.]+$/, "").trim();
+    const firstPdf = files.find(isPdfFile);
+    if (firstPdf) {
+      const name = baseName(firstPdf) || "가져온 교과서";
+      return files.length === 1 ? name : `${name} 외 ${files.length - 1}개`;
+    }
+    const now = new Date();
+    const stamp = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    return `사진으로 넣은 교과서 (${stamp})`;
+  }
+
+  // 고른 파일(PDF·사진 섞여도 됨)을 순서대로 읽어서 책 한 권의 페이지 목록으로 이어 붙인다.
+  // 북마크(목차)가 있는 PDF의 페이지는 outlineUnit에 단원 정보를 미리 담아둔다.
+  async function collectPages(files) {
+    const pages = [];
     let spokenMilestone = 0;
-    for (let i = 0; i < totalPages; i++) {
+    for (let f = 0; f < files.length; f++) {
       if (batchImportCancelled) return null;
-      let text = await window.PdfImport.extractPageText(pdfDoc, i);
-      if (!text) {
+      const file = files[f];
+      const prefix = files.length > 1 ? `파일 ${f + 1} / ${files.length} · ` : "";
+
+      if (isPdfFile(file)) {
+        updateBatchStatus(`${prefix}PDF를 여는 중입니다...`);
+        const pdfDoc = await window.PdfImport.openPdf(file);
+        const totalPages = pdfDoc.numPages;
+        const outline = await window.PdfImport.extractOutline(pdfDoc);
+        for (let i = 0; i < totalPages; i++) {
+          if (batchImportCancelled) return null;
+          // 텍스트 레이어 우선, 없으면 렌더링 + OCR
+          let text = await window.PdfImport.extractPageText(pdfDoc, i);
+          if (!text) {
+            try {
+              const dataUrl = await window.PdfImport.renderPageToDataUrl(pdfDoc, i);
+              text = await ocrText(dataUrl.split(",")[1], "image/jpeg");
+            } catch (e) {
+              text = null;
+            }
+          }
+          let outlineUnit = null;
+          if (outline) {
+            const entry = window.PdfImport.findOutlineEntryForPage(outline, i);
+            if (entry) {
+              outlineUnit = { unitNumber: deriveUnitNumber(entry.title, outline.indexOf(entry)), unitTitle: entry.title || null };
+            }
+          }
+          pages.push({ text, hasOutline: !!outline, outlineUnit });
+          updateBatchStatus(`${prefix}${i + 1} / ${totalPages}페이지 처리 중`);
+        }
+      } else {
+        updateBatchStatus(`${prefix}사진 처리 중`);
+        let text = null;
         try {
-          const dataUrl = await window.PdfImport.renderPageToDataUrl(pdfDoc, i);
-          const result = await VoxAPI.aiOcr(dataUrl.split(",")[1], "image/jpeg");
-          text = (result.text || "").trim() || null;
+          const dataUrl = await readFileAsDataUrl(file);
+          text = await ocrText(dataUrl.split(",")[1], file.type || "image/jpeg");
         } catch (e) {
           text = null;
         }
+        pages.push({ text, hasOutline: false, outlineUnit: null });
       }
-      pagesText.push(text);
 
-      const pct = Math.round(((i + 1) / totalPages) * 100);
-      updateBatchStatus(`${i + 1} / ${totalPages}페이지 처리 중 (${pct}%)`);
-      spokenMilestone = speakMilestone(pct, spokenMilestone);
+      spokenMilestone = speakMilestone(Math.round(((f + 1) / files.length) * 100), spokenMilestone);
     }
+    return pages;
+  }
+
+  // 한 번에 고른 파일은 몇 개든, PDF·사진이 섞여 있든 교과서 한 권으로 만든다.
+  async function importFilesAsOneBook(files) {
+    const onlyImages = !files.some(isPdfFile);
+    const unit = onlyImages ? "장" : "페이지";
+    updateBatchStatus(`파일 ${files.length}개를 읽는 중입니다...`);
+    speak(files.length > 1
+      ? `파일 ${files.length}개를 한 권의 교과서로 만들고 있습니다. 잠시만 기다려주세요.`
+      : "파일을 처리하고 있습니다. 잠시만 기다려주세요.");
+
+    const bookTitle = bookTitleForFiles(files);
+    const importFingerprint = await fingerprintFiles(files);
+
+    const pages = await collectPages(files);
+    if (!pages) return null;
 
     // 과목은 책 전체에서 한 번만 분류한다(페이지마다 다시 분류하지 않음).
-    const subject = await detectSubjectOrDefault(pagesText.find((t) => t && t.trim()));
+    const subject = await detectSubjectOrDefault((pages.find((p) => p.text && p.text.trim()) || {}).text);
 
-    // 2단계: 목차 확정. 북마크가 있으면 그대로 쓰고, 없으면 목차로 보이는 페이지를 AI로 파싱해서
-    // 단원을 매칭한다(recognizeUnitsFromPages). 목차 페이지 자체는 "책 내용"이 아니라 AI가 단원을
-    // 인식하는 데만 쓰는 자료이므로, 실제 책 페이지 목록(payload)에는 넣지 않는다.
+    // 북마크가 없는 파일에서 온 페이지만 AI로 목차를 찾아 단원을 매칭한다(recognizeUnitsFromPages).
+    // 목차 페이지 자체는 "책 내용"이 아니라 AI가 단원을 인식하는 데만 쓰는 자료이므로 payload에서 뺀다.
+    updateBatchStatus("단원을 배정하는 중입니다...");
     let tocPageIndex = -1;
     let matchedByIndex = new Map();
     let unitTitleByNumber = new Map();
-    if (!outline) {
-      const recognized = await recognizeUnitsFromPages(pagesText);
+    const textsForRecognition = pages.map((p) => (p.hasOutline ? null : p.text));
+    if (textsForRecognition.some(Boolean)) {
+      const recognized = await recognizeUnitsFromPages(textsForRecognition);
       tocPageIndex = recognized.tocPageIndex;
       matchedByIndex = recognized.matchedByIndex;
       unitTitleByNumber = recognized.unitTitleByNumber;
     }
 
-    updateBatchStatus("단원을 배정하는 중입니다...");
     const payload = [];
-    for (let i = 0; i < totalPages; i++) {
+    for (let i = 0; i < pages.length; i++) {
       if (batchImportCancelled) return null;
-      if (i === tocPageIndex) continue; // 목차 페이지는 건너뛰고 AI 인식에만 활용
-      const text = pagesText[i];
-      if (!text) {
-        payload.push({
-          title: `${bookTitle} ${i + 1}페이지`,
-          subject, bodyText: EMPTY_PAGE_TEXT, unitNumber: null, unitTitle: null,
-          needsReview: true, reviewReason: "ocr_empty",
-        });
-        continue;
-      }
+      if (i === tocPageIndex) continue;
+      const { text, outlineUnit } = pages[i];
       let unitNumber = null;
       let unitTitle = null;
-      if (outline) {
-        const entry = window.PdfImport.findOutlineEntryForPage(outline, i);
-        if (entry) {
-          unitNumber = deriveUnitNumber(entry.title, outline.indexOf(entry));
-          unitTitle = entry.title || null;
-        }
-      } else if (matchedByIndex.has(i)) {
+      if (text && outlineUnit) {
+        unitNumber = outlineUnit.unitNumber;
+        unitTitle = outlineUnit.unitTitle;
+      } else if (text && matchedByIndex.has(i)) {
         unitNumber = matchedByIndex.get(i);
         unitTitle = unitTitleByNumber.get(unitNumber) || null;
       }
       const needsReview = unitNumber === null;
       payload.push({
-        title: `${bookTitle} ${i + 1}페이지`,
-        subject, bodyText: text, unitNumber, unitTitle,
-        needsReview, reviewReason: needsReview ? "unit_unmatched" : null,
-      });
-    }
-
-    const created = await sendChaptersBulk(payload, bookTitle, importFingerprint);
-    if (!created) return null;
-    return {
-      total: payload.length,
-      needsReview: payload.filter((p) => p.needsReview).length,
-      unit: "페이지",
-      bookId: created[0] && created[0].bookId,
-    };
-  }
-
-  async function importImageFiles(files) {
-    updateBatchStatus(`0 / ${files.length}장 처리 중`);
-    speak(`이미지 ${files.length}장을 처리하고 있습니다. 잠시만 기다려주세요.`);
-    const importFingerprint = await fingerprintImages(files);
-
-    const pagesText = [];
-    let spokenMilestone = 0;
-    for (let i = 0; i < files.length; i++) {
-      if (batchImportCancelled) return null;
-      let text = null;
-      try {
-        const dataUrl = await readFileAsDataUrl(files[i]);
-        const result = await VoxAPI.aiOcr(dataUrl.split(",")[1], files[i].type || "image/jpeg");
-        text = (result.text || "").trim() || null;
-      } catch (e) {
-        text = null;
-      }
-      pagesText.push(text);
-
-      const pct = Math.round(((i + 1) / files.length) * 100);
-      updateBatchStatus(`${i + 1} / ${files.length}장 처리 중 (${pct}%)`);
-      spokenMilestone = speakMilestone(pct, spokenMilestone);
-    }
-
-    const subject = await detectSubjectOrDefault(pagesText.find((t) => t && t.trim()));
-
-    // 사진 여러 장을 한 번에 넣은 것도 하나의 책으로 취급 — 다른 배치와 목차에서 섞이지 않게 이름을 붙인다.
-    const now = new Date();
-    const stamp = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    const bookTitle = `사진으로 넣은 교과서 (${stamp})`;
-
-    // 찍은 사진 중에 목차 페이지가 섞여 있으면(예: 표지 다음에 목차를 찍은 경우) 그걸로 단원을
-    // 인식해서 나머지 사진들을 자동 배정한다. PDF와 똑같은 인식 로직을 그대로 쓴다.
-    updateBatchStatus("단원을 배정하는 중입니다...");
-    const { tocPageIndex, matchedByIndex, unitTitleByNumber } = await recognizeUnitsFromPages(pagesText);
-
-    const payload = [];
-    for (let i = 0; i < files.length; i++) {
-      if (batchImportCancelled) return null;
-      if (i === tocPageIndex) continue; // 목차를 찍은 사진은 책 내용으로 넣지 않는다
-      const text = pagesText[i];
-      const unitNumber = text && matchedByIndex.has(i) ? matchedByIndex.get(i) : null;
-      const needsReview = unitNumber === null;
-      payload.push({
-        title: `${bookTitle} ${i + 1}장`,
+        title: `${bookTitle} ${i + 1}${unit}`,
         subject,
         bodyText: text || EMPTY_PAGE_TEXT,
         unitNumber,
-        unitTitle: unitNumber === null ? null : (unitTitleByNumber.get(unitNumber) || null),
+        unitTitle,
         needsReview,
         reviewReason: needsReview ? (text ? "unit_unmatched" : "ocr_empty") : null,
       });
     }
+    if (!payload.length) return null;
 
     const created = await sendChaptersBulk(payload, bookTitle, importFingerprint);
     if (!created) return null;
     return {
       total: payload.length,
       needsReview: payload.filter((p) => p.needsReview).length,
-      unit: "장",
       bookId: created[0] && created[0].bookId,
     };
   }
@@ -1704,38 +1719,22 @@ const SPECIAL_BY_SLUG = {
     batchPickFileBtn.disabled = true;
     cancelBatchImportBtn.hidden = false;
     try {
-      // PDF는 몇 개를 고르든 파일마다 페이지 단위로 제대로 읽어야 하므로 각각 importPdfFile로 보낸다.
-      // (예전에는 "PDF 1개일 때만" 이 경로를 타서, PDF를 여러 개 고르면 파일 전체가 사진 한 장처럼
-      // 통째로 OCR에 넘어가 페이지가 다 뭉개졌다.) 사진들은 한 번 고른 걸 한 책으로 묶어 처리한다.
-      const pdfFiles = files.filter((f) => f.type === "application/pdf");
-      const imageFiles = files.filter((f) => f.type !== "application/pdf");
-      if (pdfFiles.length && !window.PdfImport) {
+      // 여러 파일을 골라도 교과서 한 권으로 합친다. 파일 선택창이 주는 순서는 OS마다 제각각이라
+      // 이름 순(1, 2, ..., 10처럼 숫자 크기 기준)으로 정렬해서 페이지 순서를 예측 가능하게 한다.
+      files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+      if (files.some(isPdfFile) && !window.PdfImport) {
         throw new Error("PDF 처리 모듈을 불러오지 못했어요");
       }
 
-      const results = [];
-      for (let i = 0; i < pdfFiles.length; i++) {
-        if (batchImportCancelled) break;
-        if (pdfFiles.length > 1) updateBatchStatus(`PDF ${i + 1} / ${pdfFiles.length}개 처리 시작...`);
-        const r = await importPdfFile(pdfFiles[i]);
-        if (r) results.push(r);
-      }
-      if (!batchImportCancelled && imageFiles.length) {
-        const r = await importImageFiles(imageFiles);
-        if (r) results.push(r);
-      }
-
-      // 결과가 하나도 없으면 취소했거나, 중복 확인에서 전부 추가하지 않기로 했다는 뜻이다.
-      if (!results.length) { notifyImportCancelled(); return; }
+      const result = await importFilesAsOneBook(files);
+      // 결과가 없으면 취소했거나, 중복 확인에서 추가하지 않기로 했다는 뜻이다.
+      if (!result) { notifyImportCancelled(); return; }
 
       state.chapters = await VoxAPI.listChapters();
       renderAllChapters();
       batchImportPanel.hidden = true;
-      openLibraryPanel(results[results.length - 1].bookId);
-      const total = results.reduce((sum, r) => sum + r.total, 0);
-      const needsReview = results.reduce((sum, r) => sum + r.needsReview, 0);
-      const bookNote = results.length > 1 ? ` (책 ${results.length}권)` : "";
-      const summary = `총 ${total}쪽${bookNote} 중 ${needsReview}쪽는 확인이 필요합니다.`;
+      openLibraryPanel(result.bookId);
+      const summary = `총 ${result.total}쪽 중 ${result.needsReview}쪽는 확인이 필요합니다.`;
       updateBatchStatus(summary);
       speak(summary);
       vibrate([15, 40, 15]);

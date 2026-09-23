@@ -10,10 +10,20 @@ import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
 
+// 한글 PDF는 대부분 CID 폰트를 쓰는데, 글자→유니코드 표(ToUnicode)가 없는 파일(예: macOS "PDF로 저장")은
+// CMap 파일이 없으면 pdf.js가 한글을 전부 버리고 "1 . ." 같은 숫자·기호만 돌려준다.
+// cdnjs에는 cmaps가 없어서(403) 같은 버전의 jsDelivr 사본을 쓴다.
+const PDFJS_ASSETS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/';
+
 const PdfImport = (() => {
   async function openPdf(file) {
     const data = await file.arrayBuffer();
-    const loadingTask = pdfjsLib.getDocument({ data });
+    const loadingTask = pdfjsLib.getDocument({
+      data,
+      cMapUrl: PDFJS_ASSETS + 'cmaps/',
+      cMapPacked: true,
+      standardFontDataUrl: PDFJS_ASSETS + 'standard_fonts/',
+    });
     return loadingTask.promise;
   }
 
@@ -51,13 +61,21 @@ const PdfImport = (() => {
     return match;
   }
 
-  // 텍스트 레이어가 있는 페이지면 OCR 없이 바로 텍스트를 얻는다. 사실상 비어있으면(스캔 이미지 PDF)
-  // null을 반환해서 호출부가 renderPageToDataUrl + OCR로 폴백하게 한다.
+  // 텍스트 레이어가 있는 페이지면 OCR 없이 바로 텍스트를 얻는다. 사실상 비어있거나(스캔 이미지 PDF)
+  // 글자는 없고 숫자·기호만 남은 경우(폰트를 해석하지 못함)는 null을 반환해서
+  // 호출부가 renderPageToDataUrl + OCR로 폴백하게 한다.
   async function extractPageText(pdfDoc, pageIndex) {
     const page = await pdfDoc.getPage(pageIndex + 1); // pdf.js 페이지 번호는 1부터 시작
     const content = await page.getTextContent();
-    const text = content.items.map((it) => it.str || '').join(' ').replace(/\s+/g, ' ').trim();
-    return text.length >= 5 ? text : null;
+    // 공백은 pdf.js가 별도 항목으로 넣어주므로 그대로 이어 붙이고, 줄 끝(hasEOL)만 띄어쓴다.
+    // (예전처럼 항목마다 공백을 넣으면 "1 단원", "핍니다 ." 처럼 글자 사이가 벌어진다.)
+    const text = content.items
+      .map((it) => (it.str || '') + (it.hasEOL ? ' ' : ''))
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const letterCount = (text.match(/\p{L}/gu) || []).length;
+    return text.length >= 5 && letterCount >= 3 ? text : null;
   }
 
   async function renderPageToDataUrl(pdfDoc, pageIndex, scale = 1.5) {
