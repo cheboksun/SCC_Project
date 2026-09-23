@@ -1114,7 +1114,9 @@ const SPECIAL_BY_SLUG = {
     try {
       const question = await VoxAPI.aiGenerateQuiz(chapter ? chapter.title : "", chapter ? chapter.bodyText : "");
       currentQuizQuestion = question;
-      quizQuestionBox.textContent = "Q. " + question;
+      // 어느 단원에 대한 퀴즈인지 화면에 같이 보여줘서, 원하는 단원으로 들어간 게 맞았는지
+      // 바로 확인할 수 있게 한다.
+      quizQuestionBox.textContent = (chapter ? `[${chapter.title}] ` : "") + "Q. " + question;
       speak(question);
       quizAnswerRow.style.display = "flex";
       vibrate([15, 40, 15]);
