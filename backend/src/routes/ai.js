@@ -20,6 +20,7 @@ router.use(aiLimiter);
 
 function handleAiError(res, err) {
   console.error("[ai]", err.message);
+  if (err.quotaExceeded) return res.status(429).json({ error: err.message, quotaExceeded: true });
   res.status(502).json({ error: err.message });
 }
 

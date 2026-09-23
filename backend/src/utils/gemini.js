@@ -1,6 +1,8 @@
-// "-latest" 별칭을 쓰면 Google이 권장 모델을 바꿔도 코드 수정 없이 따라감
-const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
+// "-latest" 별칭을 쓰면 Google이 권장 모델을 바꿔도 코드 수정 없이 따라감.
+// 기본 모델이 "high demand"로 자주 막혀서, 막히면 더 가벼운 lite 모델로 바로 넘어간다.
+const GEMINI_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"];
+const geminiUrl = (model) =>
+  `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
 // Gemini가 "high demand"일 때 응답을 아예 안 주고 무한정 멈추는 경우가 있어서
 // (수 분 이상 응답 없음 확인됨), 타임아웃 없이 fetch만 걸어두면 사용자 화면이
@@ -16,19 +18,25 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// 한 바퀴에 모델들을 차례로 시도하고, 전부 일시 오류면 잠깐 쉬었다가 다음 바퀴를 돈다.
 async function callGeminiParts(systemPrompt, parts) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await callGeminiOnce(systemPrompt, parts);
-    } catch (err) {
-      if (!err.retryable || attempt >= RETRY_DELAYS_MS.length) throw err;
-      console.warn(`[ai] 일시 오류로 재시도 (${attempt + 1}/${RETRY_DELAYS_MS.length}): ${err.message}`);
-      await sleep(RETRY_DELAYS_MS[attempt]);
+  for (let round = 0; ; round++) {
+    let lastErr;
+    for (const model of GEMINI_MODELS) {
+      try {
+        return await callGeminiOnce(model, systemPrompt, parts);
+      } catch (err) {
+        if (!err.retryable) throw err;
+        console.warn(`[ai] ${model} 일시 오류: ${err.message}`);
+        lastErr = err;
+      }
     }
+    if (round >= RETRY_DELAYS_MS.length) throw lastErr;
+    await sleep(RETRY_DELAYS_MS[round]);
   }
 }
 
-async function callGeminiOnce(systemPrompt, parts) {
+async function callGeminiOnce(model, systemPrompt, parts) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("서버에 GEMINI_API_KEY가 설정되어 있지 않아요");
@@ -39,7 +47,7 @@ async function callGeminiOnce(systemPrompt, parts) {
 
   let response;
   try {
-    response = await fetch(GEMINI_URL, {
+    response = await fetch(geminiUrl(model), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -69,6 +77,17 @@ async function callGeminiOnce(systemPrompt, parts) {
 
   if (!response.ok || data.error) {
     const msg = (data.error && data.error.message) || "HTTP " + response.status;
+    // 무료 사용량(quota) 초과는 몇 초 뒤 재시도해도 소용없고 기다리게만 하므로 재시도하지 않고,
+    // 영어 원문 대신 학생이 이해할 수 있는 안내로 바꿔서 돌려준다.
+    if (response.status === 429 && /quota/i.test(msg)) {
+      const wait = msg.match(/retry in ([\d.]+)s/i);
+      const err = new Error(
+        "AI 무료 사용량을 다 썼어요. " +
+          (wait ? `${Math.ceil(parseFloat(wait[1]))}초 뒤에 다시 시도해 주세요` : "잠시 후 다시 시도해 주세요")
+      );
+      err.quotaExceeded = true;
+      throw err;
+    }
     const err = new Error(msg);
     err.retryable = RETRYABLE_STATUS.has(response.status) || /high demand|overloaded/i.test(msg);
     throw err;

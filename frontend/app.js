@@ -1534,7 +1534,8 @@ const SPECIAL_BY_SLUG = {
       try {
         return await VoxAPI.aiOcr(imageBase64, mimeType);
       } catch (e) {
-        const retryable = !e.status || e.status === 429 || e.status >= 500;
+        const quotaExceeded = e.data && e.data.quotaExceeded;
+        const retryable = !quotaExceeded && (!e.status || e.status === 429 || e.status >= 500);
         if (!retryable || batchImportCancelled || attempt >= OCR_RETRY_DELAYS_MS.length) throw e;
         await new Promise((r) => setTimeout(r, e.status === 429 ? 20000 : OCR_RETRY_DELAYS_MS[attempt]));
       }
