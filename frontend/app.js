@@ -1704,19 +1704,38 @@ const SPECIAL_BY_SLUG = {
     batchPickFileBtn.disabled = true;
     cancelBatchImportBtn.hidden = false;
     try {
-      const isSinglePdf = files.length === 1 && files[0].type === "application/pdf";
-      if (isSinglePdf && !window.PdfImport) {
+      // PDF는 몇 개를 고르든 파일마다 페이지 단위로 제대로 읽어야 하므로 각각 importPdfFile로 보낸다.
+      // (예전에는 "PDF 1개일 때만" 이 경로를 타서, PDF를 여러 개 고르면 파일 전체가 사진 한 장처럼
+      // 통째로 OCR에 넘어가 페이지가 다 뭉개졌다.) 사진들은 한 번 고른 걸 한 책으로 묶어 처리한다.
+      const pdfFiles = files.filter((f) => f.type === "application/pdf");
+      const imageFiles = files.filter((f) => f.type !== "application/pdf");
+      if (pdfFiles.length && !window.PdfImport) {
         throw new Error("PDF 처리 모듈을 불러오지 못했어요");
       }
-      const result = isSinglePdf ? await importPdfFile(files[0]) : await importImageFiles(files);
-      // null = 사용자가 취소했거나, 중복 확인에서 추가하지 않기로 했음 — 아무것도 만들지 않았다.
-      if (!result) { notifyImportCancelled(); return; }
+
+      const results = [];
+      for (let i = 0; i < pdfFiles.length; i++) {
+        if (batchImportCancelled) break;
+        if (pdfFiles.length > 1) updateBatchStatus(`PDF ${i + 1} / ${pdfFiles.length}개 처리 시작...`);
+        const r = await importPdfFile(pdfFiles[i]);
+        if (r) results.push(r);
+      }
+      if (!batchImportCancelled && imageFiles.length) {
+        const r = await importImageFiles(imageFiles);
+        if (r) results.push(r);
+      }
+
+      // 결과가 하나도 없으면 취소했거나, 중복 확인에서 전부 추가하지 않기로 했다는 뜻이다.
+      if (!results.length) { notifyImportCancelled(); return; }
 
       state.chapters = await VoxAPI.listChapters();
       renderAllChapters();
       batchImportPanel.hidden = true;
-      openLibraryPanel(result.bookId);
-      const summary = `총 ${result.total}${result.unit} 중 ${result.needsReview}${result.unit}는 확인이 필요합니다.`;
+      openLibraryPanel(results[results.length - 1].bookId);
+      const total = results.reduce((sum, r) => sum + r.total, 0);
+      const needsReview = results.reduce((sum, r) => sum + r.needsReview, 0);
+      const bookNote = results.length > 1 ? ` (책 ${results.length}권)` : "";
+      const summary = `총 ${total}쪽${bookNote} 중 ${needsReview}쪽는 확인이 필요합니다.`;
       updateBatchStatus(summary);
       speak(summary);
       vibrate([15, 40, 15]);
@@ -1743,8 +1762,13 @@ const SPECIAL_BY_SLUG = {
   // 없으면(시드 단원, 사진 한 장 추가 등 예전 방식 데이터) 과목 단위로 묶는다.
   function groupKey(chapter) {
     const unitNumber = chapter.unitNumber ?? null;
+    // 같은 책 안에서 단원이 안 배정된(null) 페이지들은 서로 아무 관계가 없다 — 한 그룹으로
+    // 묶으면 목차에 한 줄로만 보이고, 그 줄을 눌러도 첫 페이지만 열려서 나머지 페이지는
+    // 목차에서 다시 못 찾게 된다. 그래서 페이지(chapter)마다 그룹을 따로 만든다.
+    if (chapter.bookId) {
+      return unitNumber === null ? `book:${chapter.bookId}|page:${chapter.id}` : `book:${chapter.bookId}|${unitNumber}`;
+    }
     const unitPart = unitNumber === null ? "" : unitNumber;
-    if (chapter.bookId) return `book:${chapter.bookId}|${unitPart}`;
     return `subj:${chapter.subject || "기타"}|${unitPart}`;
   }
 
@@ -1856,8 +1880,11 @@ const SPECIAL_BY_SLUG = {
       btn.type = "button";
       btn.className = "icon-btn";
       btn.setAttribute("role", "listitem");
-      const unitLabel = group.unitTitle || (group.unitNumber === null ? "미배정" : `${group.unitNumber}단원`);
-      btn.textContent = `${unitLabel} — ${group.chapters.length}페이지`;
+      // 미배정 그룹은 이제 페이지마다 따로 나뉘어 있으니, "미배정"이라고만 하면 화면읽기로 들었을 때
+      // 어느 페이지인지 구분이 안 된다 — 그 페이지 고유 제목(예: "국어책 1페이지")을 그대로 보여준다.
+      const soleChapter = group.unitNumber === null && group.chapters.length === 1 ? group.chapters[0] : null;
+      const unitLabel = group.unitTitle || (soleChapter ? soleChapter.title : (group.unitNumber === null ? "미배정" : `${group.unitNumber}단원`));
+      btn.textContent = soleChapter ? unitLabel : `${unitLabel} — ${group.chapters.length}페이지`;
       btn.addEventListener("click", () => {
         setCurrentChapter(sortGroupChapters(group.chapters)[0].id);
         libraryPanel.hidden = true;
