@@ -7,7 +7,20 @@ const GEMINI_URL =
 // 로딩 상태로 영원히 멈춰버린다. 45초를 넘기면 명확한 에러로 실패시킨다.
 const GEMINI_TIMEOUT_MS = 45000;
 
-async function callGeminiParts(systemPrompt, parts) {
+// "high demand"/"overloaded"처럼 잠깐 붐벼서 나는 에러는 몇 초 뒤 재시도하면 되는 경우가
+// 많다. 반대로 할당량 초과(quota exceeded)는 지금 당장 재시도해도 똑같이 실패하므로
+// 재시도 대상에서 뺀다 — 안 그래도 부족한 하루 요청 수만 더 깎아먹는다.
+function isTransientError(message) {
+  const m = (message || "").toLowerCase();
+  return (m.includes("high demand") || m.includes("overloaded") || m.includes("unavailable"))
+    && !m.includes("quota");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callGeminiPartsOnce(systemPrompt, parts) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("서버에 GEMINI_API_KEY가 설정되어 있지 않아요");
@@ -61,6 +74,20 @@ async function callGeminiParts(systemPrompt, parts) {
     throw new Error("AI가 빈 응답을 반환했어요 (finishReason: " + (candidate.finishReason || "?") + ")");
   }
   return text;
+}
+
+const TRANSIENT_RETRY_DELAYS_MS = [1500, 3000];
+
+async function callGeminiParts(systemPrompt, parts) {
+  for (const delay of TRANSIENT_RETRY_DELAYS_MS) {
+    try {
+      return await callGeminiPartsOnce(systemPrompt, parts);
+    } catch (err) {
+      if (!isTransientError(err.message)) throw err;
+      await sleep(delay);
+    }
+  }
+  return callGeminiPartsOnce(systemPrompt, parts);
 }
 
 async function callGemini(systemPrompt, userPrompt) {
