@@ -86,6 +86,15 @@ header.app-header .subtitle { font-size: 13.5px; color: var(--text-dim); margin-
   font-weight: 700;
   white-space: nowrap;
 }
+/* ---------- Confirm dialog (in-page replacement for native confirm()) ---------- */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; z-index: 100;
+}
+.modal-overlay[hidden] { display: none; }
+.modal-box { max-width: 420px; margin: 0; }
+
 /* ---------- Panels ---------- */
 .panel {
   background: linear-gradient(180deg, var(--surface) 0%, var(--bg-elevated) 100%);
@@ -111,7 +120,7 @@ header.app-header .subtitle { font-size: 13.5px; color: var(--text-dim); margin-
   color: var(--text); border-radius: var(--radius-sm); padding: 14px 16px; font-size: 17px;
   transition: border-color .15s, background .15s;
 }
-.field-row input:focus { border-color: var(--accent); outline: none; background: var(--surface-3); }
+.field-row input:focus { border-color: var(--accent); background: var(--surface-3); }
 .field-row input::placeholder { color: var(--text-dim); }
 
 .btn {
@@ -323,7 +332,7 @@ section.chapter .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   padding: 12px; font-size: 16px; font-family: inherit; resize: vertical;
   transition: border-color .15s;
 }
-.ocr-textarea:focus { border-color: var(--accent); outline: none; }
+.ocr-textarea:focus { border-color: var(--accent); }
 .visual-desc {
   display: none; margin-top: 8px; font-size: 15px; color: var(--text);
   background: var(--surface); border: 1.5px solid var(--surface-border); border-radius: var(--radius-xs); padding: 12px;
@@ -341,7 +350,7 @@ section.chapter .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   border: 1.5px solid var(--surface-border); border-radius: var(--radius-sm);
   padding: 13px 14px; font-size: 16px; font-family: inherit;
 }
-.graph-select:focus { border-color: var(--accent); outline: none; }
+.graph-select:focus { border-color: var(--accent); }
 .graph-trace-canvas {
   width: 100%; height: 200px; display: block; margin-top: 10px;
   touch-action: none; background: var(--surface-2);
@@ -357,7 +366,7 @@ section.chapter .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   background: var(--surface-2); border: 1.5px solid var(--surface-border); color: var(--text);
   border-radius: var(--radius-xs); padding: 9px 10px; font-size: 15px; font-family: inherit;
 }
-.review-row select:focus, .review-row input[type="number"]:focus { border-color: var(--accent); outline: none; }
+.review-row select:focus, .review-row input[type="number"]:focus { border-color: var(--accent); }
 .badge-warning {
   font-size: 13px; color: var(--focus-ink); background: var(--focus);
   padding: 5px 12px; border-radius: 999px; font-weight: 700; white-space: nowrap;
@@ -368,7 +377,7 @@ section.chapter .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .report-box { margin-top: 10px; font-size: 16px; line-height: 1.6; color: var(--text); }
 .report-box:empty::before { content: ""; }
 
-button:focus-visible, input:focus-visible, textarea:focus-visible {
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: 4px solid var(--focus); outline-offset: 2px;
 }
 

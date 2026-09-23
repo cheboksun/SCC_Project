@@ -1431,6 +1431,42 @@ const SPECIAL_BY_SLUG = {
     } catch (e) { return null; }
   }
 
+  // 브라우저 기본 confirm()은 탭을 통째로 멈추게 하고(화면리더가 못 읽는 경우도 있음),
+  // 일부 웹뷰에서는 아예 아무것도 안 띄우고 조용히 false를 돌려줘서 "선택이 안 되는" 것처럼
+  // 보이는 문제가 있었다. 그래서 페이지 안에서 직접 그리는 접근성 대화상자로 대체한다.
+  function askConfirm(message) {
+    return new Promise((resolve) => {
+      const overlay = $("confirmDialogOverlay");
+      const text = $("confirmDialogText");
+      const yesBtn = $("confirmDialogYesBtn");
+      const noBtn = $("confirmDialogNoBtn");
+      text.textContent = message;
+      overlay.hidden = false;
+
+      function cleanup(result) {
+        overlay.hidden = true;
+        yesBtn.removeEventListener("click", onYes);
+        noBtn.removeEventListener("click", onNo);
+        document.removeEventListener("keydown", onKeydown);
+        resolve(result);
+      }
+      function onYes() { cleanup(true); }
+      function onNo() { cleanup(false); }
+      // 버튼이 예/아니요 둘뿐이라 Tab이 뒤쪽 페이지(가려진 화면)로 새지 않게 그 둘 사이만 순환시킨다.
+      function onKeydown(e) {
+        if (e.key === "Escape") { cleanup(false); return; }
+        if (e.key !== "Tab") return;
+        e.preventDefault();
+        (document.activeElement === noBtn ? yesBtn : noBtn).focus();
+      }
+
+      yesBtn.addEventListener("click", onYes);
+      noBtn.addEventListener("click", onNo);
+      document.addEventListener("keydown", onKeydown);
+      noBtn.focus();
+    });
+  }
+
   // 같은 파일을 이미 가져왔다면 백엔드가 409(duplicate)로 막는다. 사용자가 원하면 force로 다시 보낸다.
   // 사용자가 거절하면 null을 돌려줘서 호출부가 취소와 같은 경로로 빠지게 한다.
   async function sendChaptersBulk(payload, bookTitle, importFingerprint) {
@@ -1439,7 +1475,8 @@ const SPECIAL_BY_SLUG = {
     } catch (e) {
       if (!(e.status === 409 && e.data && e.data.duplicate)) throw e;
       speak("이미 가져온 파일과 같아 보입니다. 그래도 추가할까요?");
-      if (!confirm("이미 가져온 파일과 같아 보여요. 그래도 추가할까요?")) return null;
+      const proceed = await askConfirm("이미 가져온 파일과 같아 보여요. 그래도 추가할까요?");
+      if (!proceed) return null;
       return await VoxAPI.addChaptersBulk(payload, bookTitle, { importFingerprint, force: true });
     }
   }
@@ -1704,19 +1741,39 @@ const SPECIAL_BY_SLUG = {
     batchPickFileBtn.disabled = true;
     cancelBatchImportBtn.hidden = false;
     try {
-      const isSinglePdf = files.length === 1 && files[0].type === "application/pdf";
-      if (isSinglePdf && !window.PdfImport) {
+      // PDF와 이미지를 섞어서(또는 PDF 여러 개를) 골라도 각자 맞는 경로로 보낸다.
+      // 예전에는 "파일이 1개이면서 PDF일 때"만 PDF 전용 처리를 탔고, 그 외(PDF 2개 이상 포함)는
+      // 전부 이미지 OCR 경로로 넘어가서 PDF 원문을 통째로 이미지처럼 인식 시도해 인식률이 크게 떨어졌다.
+      const pdfFiles = files.filter((f) => f.type === "application/pdf");
+      const imageFiles = files.filter((f) => f.type !== "application/pdf");
+      if (pdfFiles.length && !window.PdfImport) {
         throw new Error("PDF 처리 모듈을 불러오지 못했어요");
       }
-      const result = isSinglePdf ? await importPdfFile(files[0]) : await importImageFiles(files);
-      // null = 사용자가 취소했거나, 중복 확인에서 추가하지 않기로 했음 — 아무것도 만들지 않았다.
-      if (!result) { notifyImportCancelled(); return; }
+
+      const results = [];
+      for (let i = 0; i < pdfFiles.length; i++) {
+        if (batchImportCancelled) break;
+        if (pdfFiles.length > 1) updateBatchStatus(`PDF ${i + 1} / ${pdfFiles.length}개 처리 중: ${pdfFiles[i].name}`);
+        const r = await importPdfFile(pdfFiles[i]);
+        if (r) results.push(r);
+      }
+      if (!batchImportCancelled && imageFiles.length) {
+        const r = await importImageFiles(imageFiles);
+        if (r) results.push(r);
+      }
+
+      // 결과가 하나도 없으면 사용자가 취소했거나, 중복 확인에서 추가하지 않기로 했음 — 아무것도 만들지 않았다.
+      if (!results.length) { notifyImportCancelled(); return; }
 
       state.chapters = await VoxAPI.listChapters();
       renderAllChapters();
       batchImportPanel.hidden = true;
-      openLibraryPanel(result.bookId);
-      const summary = `총 ${result.total}${result.unit} 중 ${result.needsReview}${result.unit}는 확인이 필요합니다.`;
+      openLibraryPanel(results[results.length - 1].bookId);
+      const total = results.reduce((sum, r) => sum + r.total, 0);
+      const needsReview = results.reduce((sum, r) => sum + r.needsReview, 0);
+      const summary = results.length > 1
+        ? `책 ${results.length}권, 총 ${total}개 항목 중 ${needsReview}개는 확인이 필요합니다.`
+        : `총 ${total}${results[0].unit} 중 ${needsReview}${results[0].unit}는 확인이 필요합니다.`;
       updateBatchStatus(summary);
       speak(summary);
       vibrate([15, 40, 15]);
