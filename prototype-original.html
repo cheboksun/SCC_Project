@@ -1,0 +1,1627 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>같이보는 교과서 - 프로토타입</title>
+<style>
+  :root {
+    --bg: #0c0e12;
+    --surface: #15181e;
+    --surface-2: #1e222a;
+    --text: #eef1f0;
+    --text-dim: #8b93a1;
+    --accent: #4fd1ae;
+    --accent-dim: #1c4438;
+    --focus: #ffd166;
+    --danger: #ff6b6b;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Apple SD Gothic Neo", "Pretendard", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body { padding: 20px 16px 100px; max-width: 640px; margin: 0 auto; }
+
+  /* 시각적으로는 숨기지만 스크린리더는 읽는 라벨 */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
+
+  header.app-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 2px 18px;
+  }
+  header.app-header h1 {
+    font-size: 19px; font-weight: 700; margin: 0;
+    letter-spacing: -0.2px;
+  }
+  .status-pill {
+    font-size: 12px; color: var(--accent);
+    background: var(--accent-dim);
+    padding: 5px 10px; border-radius: 999px;
+    border: 1px solid rgba(94,200,168,0.4);
+  }
+
+  /* 검색 / 이동 */
+  .jump-box {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin-bottom: 16px;
+  }
+  .jump-box label { font-size: 13px; color: var(--text-dim); display:block; margin-bottom:8px; }
+  .jump-row { display: flex; gap: 8px; }
+  .jump-row input {
+    flex: 1; background: var(--surface-2); border: 1px solid #333945;
+    color: var(--text); border-radius: 10px; padding: 12px 14px; font-size: 15px;
+  }
+  .jump-row button {
+    background: var(--accent); color: #04231c; border: none;
+    border-radius: 10px; padding: 0 18px; font-weight: 700; font-size: 14px;
+  }
+
+  /* 출력 방식 설정 */
+  .settings {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 18px;
+  }
+  .settings > span.title { font-size: 13px; color: var(--text-dim); display:block; margin-bottom:10px; }
+  .seg {
+    display: flex; background: var(--surface-2); border-radius: 10px; padding: 4px; gap: 4px;
+  }
+  .seg button {
+    flex: 1; background: transparent; border: none; color: var(--text-dim);
+    padding: 10px 6px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  }
+  .seg button[aria-pressed="true"] {
+    background: var(--accent); color: #04231c;
+  }
+
+  /* 목차 이동칩 */
+  .toc {
+    display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 18px;
+  }
+  .toc button {
+    flex: none; background: var(--surface); color: var(--text-dim);
+    border: 1px solid #2a2f38; border-radius: 999px; padding: 8px 14px; font-size: 13px;
+  }
+  .toc button[aria-current="true"] {
+    color: var(--accent); border-color: var(--accent); background: var(--accent-dim);
+  }
+
+  /* 무신사 상품 목록처럼: 목차를 카드 그리드로, 카드 하나 = 단원 하나 */
+  .toc.grid-cards {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+  .toc.grid-cards button {
+    flex: none;
+    text-align: left;
+    white-space: normal;
+    border-radius: 14px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 84px;
+  }
+  .toc.grid-cards button .card-title {
+    font-weight: 700; font-size: 14px; color: var(--text);
+  }
+  .toc.grid-cards button[aria-current="true"] .card-title { color: var(--accent); }
+  .toc.grid-cards button .card-preview {
+    font-size: 12px; color: var(--text-dim); line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+
+  /* 상세보기 모드: 목록에서 카드를 누르기 전까지 본문은 숨김 */
+  main#content { display: none; }
+  main#content.open { display: block; }
+  section.chapter { display: none; }
+  section.chapter.current { display: block; }
+
+  #backToListBtn {
+    display: none;
+    margin-bottom: 14px;
+  }
+
+  /* 본문 섹션 */
+  main section.chapter {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 18px;
+    margin-bottom: 14px;
+    border: 2px solid transparent;
+  }
+  main section.chapter.current {
+    border-color: var(--accent);
+  }
+  section.chapter h2 {
+    font-size: 16px; margin: 0 0 4px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  section.chapter .eyebrow {
+    font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;
+    display: block; margin-bottom: 4px;
+  }
+  section.chapter p {
+    font-size: 15px; line-height: 1.7; color: #d8d5cc; margin: 8px 0 12px;
+  }
+  section.chapter .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .icon-btn {
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid #333945; border-radius: 10px;
+    padding: 9px 12px; font-size: 13px; display: flex; align-items: center; gap: 6px;
+  }
+  .icon-btn[aria-pressed="true"] { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+
+  /* 하단 고정 플레이어 */
+  .player {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: var(--surface); border-top: 1px solid #2a2f38;
+    padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
+  }
+  .player-inner { max-width: 640px; margin: 0 auto; }
+  .player .now {
+    font-size: 12px; color: var(--text-dim); margin-bottom: 8px;
+  }
+  .transport { display: flex; align-items: center; gap: 10px; }
+  .transport button {
+    background: var(--surface-2); border: 1px solid #333945; color: var(--text);
+    width: 46px; height: 46px; border-radius: 50%; font-size: 16px;
+  }
+  .transport button.play {
+    background: var(--accent); color: #04231c; border: none; width: 56px; height: 56px; font-size: 20px;
+  }
+
+  /* 촬영 화면 */
+  .camera-card {
+    background: var(--surface); border-radius: var(--radius); padding: 16px; margin-bottom: 18px;
+    text-align: center;
+  }
+  .camera-card button.shutter {
+    margin-top: 10px; background: var(--accent); color: #04231c; border: none;
+    padding: 14px 22px; border-radius: 12px; font-weight: 700; font-size: 15px;
+  }
+  .guide-line {
+    font-size: 13px; color: var(--text-dim); margin-top: 8px; min-height: 18px;
+  }
+
+  button:focus-visible, input:focus-visible {
+    outline: 3px solid var(--focus); outline-offset: 2px;
+  }
+
+  [aria-live="polite"].toast {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: #04231c; padding: 8px 16px; border-radius: 999px;
+    font-size: 13px; font-weight: 700; opacity: 0; transition: opacity 0.25s;
+    pointer-events: none;
+  }
+  [aria-live="polite"].toast.show { opacity: 1; }
+
+  /* 고대비 모드 */
+  body.high-contrast {
+    --bg: #000000;
+    --surface: #000000;
+    --surface-2: #1a1a1a;
+    --text: #ffffff;
+    --text-dim: #ffff00;
+    --accent: #ffff00;
+    --accent-dim: #444400;
+    --focus: #00ffff;
+  }
+  body.high-contrast section.chapter,
+  body.high-contrast .jump-box,
+  body.high-contrast .settings,
+  body.high-contrast .camera-card,
+  body.high-contrast .player {
+    border: 2px solid #ffffff;
+  }
+</style>
+<script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
+</head>
+<body>
+
+<div class="toast" id="toast" aria-live="polite"></div>
+
+<header class="app-header">
+  <h1>같이보는 교과서</h1>
+  <span class="status-pill" id="modeIndicator">소리+진동</span>
+</header>
+
+<!-- 화면 접근성 설정 (글자 크기 / 고대비 / 읽는 속도 / 항상 듣기) -->
+<div class="settings" aria-label="화면 및 음성 설정">
+  <span class="title">화면·음성 설정</span>
+  <div class="row-actions">
+    <button class="icon-btn" id="fontDecreaseBtn" aria-label="글자 작게">가-</button>
+    <button class="icon-btn" id="fontIncreaseBtn" aria-label="글자 크게">가+</button>
+    <button class="icon-btn" id="contrastToggleBtn" aria-pressed="false" aria-label="고대비 모드 전환">고대비</button>
+    <button class="icon-btn" id="alwaysListenBtn" aria-pressed="false" aria-label="항상 듣기 모드 전환">🎙 항상 듣기: 꺼짐</button>
+  </div>
+  <div style="margin-top:10px;">
+    <label for="rateSlider" style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:6px;">읽는 속도</label>
+    <input type="range" id="rateSlider" min="0.6" max="1.8" step="0.1" value="1.0" style="width:100%;" aria-label="음성 읽는 속도 조절">
+  </div>
+  <div class="guide-line" id="alwaysListenStatus"></div>
+</div>
+
+<!-- 1. 촬영 -->
+<section class="camera-card" aria-label="교과서 페이지 촬영">
+  <span class="eyebrow" style="display:block;margin-bottom:6px;">1. 페이지 찍기</span>
+  <div class="guide-line" id="guideLine" aria-live="polite">카메라를 켜고 교과서 위에 갖다 대면 안내가 시작돼요.</div>
+
+  <video id="cameraVideo" playsinline autoplay muted
+         style="width:100%;max-height:260px;border-radius:10px;margin-top:10px;display:none;background:#000;"></video>
+  <canvas id="captureCanvas" style="display:none;"></canvas>
+
+  <button class="shutter" id="cameraStartBtn">카메라 켜기 (웹에서 직접)</button>
+  <button class="shutter" id="fileCaptureBtn" style="background:var(--surface-2);color:var(--text);">📱 사진 앱으로 찍기 (더 잘 됨)</button>
+  <input type="file" id="fileCaptureInput" accept="image/*" capture="environment" style="display:none;">
+  <button class="shutter" id="shutterBtn" style="display:none;background:var(--focus);">📸 촬영하기</button>
+
+  <div id="ocrResultBox" style="display:none;text-align:left;margin-top:14px;background:var(--surface-2);border-radius:10px;padding:12px;">
+    <span class="eyebrow" style="display:block;margin-bottom:6px;">인식된 내용 (수정 가능)</span>
+    <textarea id="ocrResultText" rows="4" style="width:100%;background:var(--surface);color:var(--text);border:1px solid #333945;border-radius:8px;padding:10px;font-size:14px;"></textarea>
+    <div id="subjectBox" style="margin-top:10px;font-size:13px;color:var(--text-dim);"></div>
+    <button class="icon-btn" id="addOcrChapterBtn" style="margin-top:8px;">✅ 교과서에 이 내용 추가하기</button>
+  </div>
+</section>
+
+<!-- 2. 원하는 곳으로 바로 이동 -->
+<!-- Google Gemini API 키 입력 (무료 티어 사용) -->
+<div class="jump-box" aria-label="Gemini API 키 설정">
+  <label for="apiKeyInput">🔑 Gemini API 키 (무료, AI 튜터/퀴즈 기능에 필요)</label>
+  <div class="jump-row">
+    <input id="apiKeyInput" type="password" placeholder="AIza..." aria-label="Gemini API 키 입력">
+    <button id="apiKeySaveBtn">저장</button>
+  </div>
+  <div class="guide-line" id="apiKeyStatus">
+    아직 키가 입력되지 않았어요 · <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent);">여기서 무료로 발급받기</a>
+  </div>
+</div>
+
+<div class="jump-box">
+  <label for="jumpInput">찾고 싶은 내용 (예: 원의 넓이)</label>
+  <div class="jump-row">
+    <input id="jumpInput" type="text" placeholder="검색해서 바로 이동" aria-label="교과서 내용 검색">
+    <button id="jumpMicBtn" aria-label="음성으로 검색어 입력" style="background:var(--surface-2);color:var(--text);border:1px solid #333945;">🎤</button>
+    <button id="jumpBtn">이동</button>
+  </div>
+</div>
+
+<!-- 3. 출력 방식 -->
+<div class="settings">
+  <span class="title">읽어주는 방식</span>
+  <div class="seg" role="group" aria-label="출력 방식 선택">
+    <button data-mode="sound" aria-pressed="true">소리만</button>
+    <button data-mode="both" aria-pressed="false">소리+진동</button>
+    <button data-mode="vibe" aria-pressed="false">진동만(화면리더용)</button>
+  </div>
+  <p style="font-size:12px;color:var(--text-dim);margin:10px 0 0;line-height:1.5;">
+    💡 보이스오버·톡백 같은 화면리더를 켜고 쓰신다면 <strong>'진동만(화면리더용)'</strong>을 골라주세요.
+    화면리더가 이미 화면 내용을 다 읽어주기 때문에, 저희 앱 음성까지 같이 나오면 두 목소리가 겹쳐 들려요.
+    이 모드에서는 저희 앱은 소리를 끄고 진동으로만 신호를 주고, 읽는 건 화면리더에게 맡겨요.
+  </p>
+</div>
+
+<!-- 마이크 테스트 -->
+<div class="settings" aria-label="마이크 테스트">
+  <span class="title">🎤 마이크 테스트</span>
+  <div class="row-actions">
+    <button class="icon-btn" id="micVolumeTestBtn">① 소리가 감지되는지 확인</button>
+    <button class="icon-btn" id="micEchoTestBtn">② 말한 걸 정확히 알아듣는지 확인</button>
+  </div>
+  <div class="guide-line" id="micTestStatus" aria-live="polite"></div>
+</div>
+
+<!-- 목차 -->
+<nav class="toc grid-cards" aria-label="단원 목록">
+  <button data-target="ch1" aria-current="true">1. 원의 뜻</button>
+  <button data-target="ch2" aria-current="false">2. 원의 넓이</button>
+  <button data-target="ch3" aria-current="false">3. 연습 문제</button>
+  <button data-target="ch4" aria-current="false">4. 수식 변환</button>
+  <button data-target="ch5" aria-current="false">5. 중세 국어</button>
+  <button data-target="ch6" aria-current="false">6. 그래프 촉각</button>
+  <button data-target="ch7" aria-current="false">7. 원의 둘레</button>
+  <button data-target="ch8" aria-current="false">8. 부채꼴의 넓이</button>
+  <button data-target="ch9" aria-current="false">9. 원기둥의 부피</button>
+</nav>
+
+<button id="backToListBtn" class="icon-btn">◀ 목록으로</button>
+
+<!-- AI 튜터: 지금 보고 있는 부분에 대해 바로 질문하기 -->
+<div class="jump-box" aria-label="AI 튜터에게 질문">
+  <label for="askInput">🤖 무엇이든 물어보기 (교과서 내용이든, 다른 궁금한 것이든)</label>
+  <div class="jump-row">
+    <input id="askInput" type="text" placeholder="예: 원주율이 왜 3.14야?" aria-label="AI 튜터에게 질문 입력">
+    <button id="askMicBtn" aria-label="음성으로 질문 입력" style="background:var(--surface-2);color:var(--text);border:1px solid #333945;">🎤</button>
+    <button id="askBtn">질문하기</button>
+  </div>
+  <div class="guide-line" id="askStatus" aria-live="polite"></div>
+</div>
+
+<!-- 이해도 확인 퀴즈 -->
+<div class="jump-box" aria-label="이해도 확인 퀴즈">
+  <label for="quizAnswerInput">🧠 방금 배운 내용, 이해했는지 확인해보기</label>
+  <div class="jump-row">
+    <button id="quizStartBtn" style="flex:1;">퀴즈 내기</button>
+  </div>
+  <div class="guide-line" id="quizQuestionBox" aria-live="polite"></div>
+  <div class="jump-row" id="quizAnswerRow" style="display:none;margin-top:8px;">
+    <input id="quizAnswerInput" type="text" placeholder="정답을 입력하세요" aria-label="퀴즈 정답 입력">
+    <button id="quizMicBtn" aria-label="음성으로 정답 입력" style="background:var(--surface-2);color:var(--text);border:1px solid #333945;">🎤</button>
+    <button id="quizCheckBtn">정답 확인</button>
+  </div>
+  <div class="guide-line" id="quizFeedback" aria-live="polite"></div>
+</div>
+
+<main id="content">
+  <section class="chapter current" id="ch1" tabindex="-1">
+    <span class="eyebrow">1단원</span>
+    <h2>원의 뜻</h2>
+    <p id="ch1-text">원은 한 점에서 같은 거리에 있는 점들을 모두 이은 도형입니다. 이 한 점을 원의 중심이라고 부릅니다. 중심에서 원 위의 한 점까지의 거리는 항상 똑같은데, 이 거리를 반지름이라고 합니다. 예를 들어 훌라후프를 떠올리면, 훌라후프의 한가운데가 중심이고, 그 중심에서 훌라후프 테두리까지의 거리가 반지름입니다. 반지름이 길수록 원은 더 커지고, 짧을수록 더 작아집니다. 원의 중심을 지나면서 양쪽 끝이 원 위에 닿는 선분은 지름이라고 하며, 지름은 항상 반지름의 두 배입니다.</p>
+    <div class="row-actions">
+      <button class="icon-btn play-this" data-target="ch1">▶ 이 부분 듣기</button>
+      <button class="icon-btn bookmark-btn" data-target="ch1" aria-pressed="false">☆ 북마크</button>
+    </div>
+  </section>
+
+  <section class="chapter" id="ch2" tabindex="-1">
+    <span class="eyebrow">2단원</span>
+    <h2>원의 넓이</h2>
+    <p id="ch2-text">원의 넓이는 반지름 곱하기 반지름 곱하기 원주율로 구합니다. 원주율은 원의 둘레가 지름의 몇 배인지를 나타내는 값으로, 약 3.14입니다. 이 공식이 나온 이유는, 원을 아주 작은 부채꼴 여러 개로 잘라서 나란히 이어 붙이면 거의 직사각형에 가까운 모양이 되는데, 그 직사각형의 가로가 원 둘레의 절반, 세로가 반지름이 되기 때문입니다. 계산해 볼까요. 반지름이 5센티미터인 원이 있다면, 먼저 반지름끼리 곱합니다. 5 곱하기 5는 25입니다. 그다음 원주율 3.14를 곱합니다. 25 곱하기 3.14는 78.5입니다. 그래서 이 원의 넓이는 78.5제곱센티미터입니다.</p>
+    <div class="row-actions">
+      <button class="icon-btn play-this" data-target="ch2">▶ 이 부분 듣기</button>
+      <button class="icon-btn bookmark-btn" data-target="ch2" aria-pressed="false">☆ 북마크</button>
+    </div>
+  </section>
+
+  <section class="chapter" id="ch3" tabindex="-1">
+    <span class="eyebrow">3단원</span>
+    <h2>연습 문제</h2>
+    <p id="ch3-text">반지름이 10센티미터인 원의 넓이를 구해 보세요. 반지름 곱하기 반지름 곱하기 원주율을 순서대로 계산하면서, 풀이 과정을 소리 내어 말해 보세요.</p>
+    <div class="row-actions">
+      <button class="icon-btn play-this" data-target="ch3">▶ 이 부분 듣기</button>
+      <button class="icon-btn bookmark-btn" data-target="ch3" aria-pressed="false">☆ 북마크</button>
+    </div>
+    <div style="margin-top:14px;background:var(--surface-2);border-radius:10px;padding:12px;">
+      <span class="eyebrow" style="display:block;margin-bottom:8px;">🎤 풀이 과정을 말로 답해보세요</span>
+      <div class="jump-row">
+        <input id="ch3AnswerInput" type="text" placeholder="마이크를 눌러 말하거나 직접 입력" aria-label="연습 문제 풀이 과정 입력">
+        <button id="ch3MicBtn" aria-label="음성으로 풀이 과정 답하기" style="background:var(--surface);color:var(--text);border:1px solid #333945;">🎤</button>
+        <button id="ch3CheckBtn">채점받기</button>
+      </div>
+      <div class="guide-line" id="ch3Feedback" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- 수학 수식 자동 변환 예시 -->
+  <section class="chapter" id="ch4" tabindex="-1">
+    <span class="eyebrow">수학 · 수식 자동 변환</span>
+    <h2>원의 넓이 공식</h2>
+    <p>화면에 보이는 수식 표기: <code id="ch4-formula">sqrt(x^2+1)</code></p>
+    <p id="ch4-text">루트 x의 제곱 더하기 1</p>
+    <div class="row-actions">
+      <button class="icon-btn play-this" data-target="ch4">▶ 이 부분 듣기</button>
+      <button class="icon-btn bookmark-btn" data-target="ch4" aria-pressed="false">☆ 북마크</button>
+    </div>
+    <div class="guide-line">↑ mathReader.js가 수식을 "읽는 순서" 문장으로 자동 변환한 결과예요</div>
+  </section>
+
+  <!-- 중세 국어: 사람 녹음 우선, 없으면 현대어 풀이로 대체 -->
+  <section class="chapter" id="ch5" tabindex="-1">
+    <span class="eyebrow">국어 · 중세 국어 대체 재생</span>
+    <h2>용비어천가</h2>
+    <p id="ch5-original">불휘 기픈 남ᄀᆞᆫ ᄇᆞᄅᆞ매 아니 뮐ᄊᆡ</p>
+    <p id="ch5-text" style="color:var(--text-dim);font-size:13px;">(현대어 풀이: 뿌리 깊은 나무는 바람에 흔들리지 않으므로)</p>
+    <div class="row-actions">
+      <button class="icon-btn play-this" data-target="ch5">▶ 이 부분 듣기</button>
+      <button class="icon-btn bookmark-btn" data-target="ch5" aria-pressed="false">☆ 북마크</button>
+      <button class="icon-btn" id="toggleRecording">🎙 녹음 있음/없음 전환 (데모)</button>
+    </div>
+    <div class="guide-line" id="ch5-status">지금 상태: 사람 녹음 없음 → 현대어 풀이를 음성으로 재생함</div>
+  </section>
+
+  <!-- 그래프를 진동으로 느끼기 -->
+  <section class="chapter" id="ch6" tabindex="-1">
+    <span class="eyebrow">수학 · 그래프 촉각 탐색</span>
+    <h2>반지름에 따른 원의 넓이 변화</h2>
+    <p style="font-size:13px;color:var(--text-dim);">
+      손가락을 아래 사각형 안에서 움직여 보세요. 곡선에 가까울수록 진동이 강해지고,
+      멀어질수록 약해지거나 멈춰요. 손끝으로 곡선의 모양을 따라가 보세요.
+    </p>
+    <canvas id="graphCanvas" width="600" height="300"
+            style="width:100%;height:220px;touch-action:none;background:var(--surface-2);border-radius:10px;display:block;margin-top:10px;"
+            aria-hidden="true"></canvas>
+    <div class="guide-line" id="graphStatus">아직 손가락을 대지 않았어요</div>
+    <div class="row-actions" style="margin-top:8px;">
+      <button class="icon-btn" id="graphDescribeBtn">🔊 이 그래프 설명 듣기</button>
+      <button class="icon-btn" id="graphStepBtn">🔊 화면리더용: 단계별로 순서대로 듣기</button>
+    </div>
+  </section>
+
+  <section class="chapter" id="ch7" tabindex="-1">
+    <span class="eyebrow">7단원</span>
+    <h2>원의 둘레</h2>
+    <p id="ch7-text">원의 둘레는 원 테두리를 따라 한 바퀴 도는 거리를 말합니다. 원의 둘레는 지름 곱하기 원주율로 구합니다. 지름은 반지름의 두 배이니, 반지름만 알아도 지름을 먼저 구한 다음 계산할 수 있습니다. 예를 들어 반지름이 5센티미터인 원이 있다면, 지름은 5의 두 배인 10센티미터입니다. 여기에 원주율 3.14를 곱하면, 10 곱하기 3.14는 31.4가 되어, 이 원의 둘레는 31.4센티미터입니다. 자전거 바퀴가 한 바퀴 굴러갈 때 나아가는 거리가 바로 바퀴 둘레와 같다고 생각하면 이해하기 쉽습니다.</p>
+    <div class="row-actions">
+      <button class="icon-btn play-this" data-target="ch7">▶ 이 부분 듣기</button>
+      <button class="icon-btn bookmark-btn" data-target="ch7" aria-pressed="false">☆ 북마크</button>
+    </div>
+  </section>
+
+  <section class="chapter" id="ch8" tabindex="-1">
+    <span class="eyebrow">8단원</span>
+    <h2>부채꼴의 넓이</h2>
+    <p id="ch8-text">부채꼴은 원의 일부분으로, 피자 한 조각처럼 생긴 모양입니다. 원을 360도로 본다면, 부채꼴은 그중 일부 각도만큼만 잘라낸 모양입니다. 그래서 부채꼴의 넓이는, 원 전체의 넓이에 그 부채꼴의 중심각을 360도로 나눈 비율을 곱해서 구합니다. 예를 들어 반지름이 6센티미터이고 중심각이 90도인 부채꼴이 있다고 합시다. 90도는 360도의 4분의 1이므로, 이 부채꼴은 원 전체 넓이의 4분의 1과 같습니다. 원 전체의 넓이가 6 곱하기 6 곱하기 3.14로 113.04제곱센티미터이니, 부채꼴의 넓이는 이 값을 4로 나눈 28.26제곱센티미터가 됩니다.</p>
+    <div class="row-actions">
+      <button class="icon-btn play-this" data-target="ch8">▶ 이 부분 듣기</button>
+      <button class="icon-btn bookmark-btn" data-target="ch8" aria-pressed="false">☆ 북마크</button>
+    </div>
+  </section>
+
+  <section class="chapter" id="ch9" tabindex="-1">
+    <span class="eyebrow">9단원</span>
+    <h2>원기둥의 부피</h2>
+    <p id="ch9-text">원기둥은 위아래가 똑같은 크기의 원 모양이고, 그 사이를 곧게 이어진 통 모양의 입체 도형입니다. 음료수 캔을 떠올리면 쉽습니다. 원기둥의 부피, 즉 그 안에 담을 수 있는 공간의 크기는, 밑면인 원의 넓이에 높이를 곱해서 구합니다. 밑면을 아주 얇게 썰어서 위로 차곡차곡 쌓아 올린다고 생각하면, 왜 넓이에 높이를 곱하는지 이해할 수 있습니다. 예를 들어 밑면 반지름이 3센티미터이고 높이가 10센티미터인 원기둥이 있다면, 먼저 밑면의 넓이를 구합니다. 3 곱하기 3 곱하기 3.14는 28.26제곱센티미터입니다. 여기에 높이 10을 곱하면 282.6이 되어, 이 원기둥의 부피는 282.6세제곱센티미터입니다.</p>
+    <div class="row-actions">
+      <button class="icon-btn play-this" data-target="ch9">▶ 이 부분 듣기</button>
+      <button class="icon-btn bookmark-btn" data-target="ch9" aria-pressed="false">☆ 북마크</button>
+    </div>
+  </section>
+</main>
+
+<div class="player" role="region" aria-label="음성 재생 컨트롤">
+  <div class="player-inner">
+    <div class="now" id="nowPlaying">재생 중인 내용 없음</div>
+    <div class="transport">
+      <button id="prevBtn" aria-label="이전 단원">⏮</button>
+      <button id="playBtn" class="play" aria-label="재생">▶</button>
+      <button id="nextBtn" aria-label="다음 단원">⏭</button>
+      <button id="bookmarkJump" aria-label="북마크한 곳으로 이동">★</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function mathToSpeech(expr) {
+  function tokenize(s) {
+    const tokens = []; let i = 0; s = s.replace(/\s+/g, "");
+    while (i < s.length) {
+      const c = s[i];
+      if ("+-*/^(),".includes(c)) { tokens.push(c); i++; }
+      else if (/[a-zA-Z가-힣]/.test(c)) {
+        let j = i; while (j < s.length && /[a-zA-Z0-9가-힣]/.test(s[j])) j++;
+        tokens.push(s.slice(i, j)); i = j;
+      } else if (/[0-9.]/.test(c)) {
+        let j = i; while (j < s.length && /[0-9.]/.test(s[j])) j++;
+        tokens.push(s.slice(i, j)); i = j;
+      } else { i++; }
+    }
+    return tokens;
+  }
+  class Parser {
+    constructor(t) { this.tokens = t; this.pos = 0; }
+    peek() { return this.tokens[this.pos]; }
+    next() { return this.tokens[this.pos++]; }
+    parseExpr() {
+      let n = this.parseTerm();
+      while (this.peek() === "+" || this.peek() === "-") {
+        const op = this.next(); n = { type: op === "+" ? "add" : "sub", left: n, right: this.parseTerm() };
+      }
+      return n;
+    }
+    parseTerm() {
+      let n = this.parsePow();
+      while (this.peek() === "*" || this.peek() === "/") {
+        const op = this.next(); n = { type: op === "*" ? "mul" : "div", left: n, right: this.parsePow() };
+      }
+      return n;
+    }
+    parsePow() {
+      let n = this.parseAtom();
+      if (this.peek() === "^") { this.next(); n = { type: "pow", base: n, exp: this.parseAtom() }; }
+      return n;
+    }
+    parseAtom() {
+      const tok = this.peek();
+      if (tok === "(") { this.next(); const n = this.parseExpr(); this.next(); return { type: "group", inner: n }; }
+      if (tok === "sqrt") { this.next(); this.next(); const inner = this.parseExpr(); this.next(); return { type: "sqrt", inner }; }
+      if (tok === "frac") { this.next(); this.next(); const num = this.parseExpr(); this.next(); const den = this.parseExpr(); this.next(); return { type: "frac", num, den }; }
+      this.next(); return { type: "value", token: tok };
+    }
+  }
+  function toKorean(n) {
+    switch (n.type) {
+      case "value": return n.token;
+      case "add": return `${toKorean(n.left)} 더하기 ${toKorean(n.right)}`;
+      case "sub": return `${toKorean(n.left)} 빼기 ${toKorean(n.right)}`;
+      case "mul": return `${toKorean(n.left)} 곱하기 ${toKorean(n.right)}`;
+      case "div": return `${toKorean(n.left)} 나누기 ${toKorean(n.right)}`;
+      case "pow":
+        if (n.exp.type === "value" && n.exp.token === "2") return `${toKorean(n.base)}의 제곱`;
+        if (n.exp.type === "value" && n.exp.token === "3") return `${toKorean(n.base)}의 세제곱`;
+        return `${toKorean(n.base)}의 ${toKorean(n.exp)}제곱`;
+      case "sqrt": return `루트 ${toKorean(n.inner)}`;
+      case "frac": return `${toKorean(n.den)}분의 ${toKorean(n.num)}`;
+      case "group": return toKorean(n.inner);
+      default: return "";
+    }
+  }
+  return toKorean(new Parser(tokenize(expr)).parseExpr());
+}
+
+(function () {
+  let chapters = ["ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8", "ch9"];
+  let titles = {
+    ch1: "1. 원의 뜻", ch2: "2. 원의 넓이", ch3: "3. 연습 문제",
+    ch4: "4. 수식 변환", ch5: "5. 중세 국어", ch6: "6. 그래프 촉각 탐색",
+    ch7: "7. 원의 둘레", ch8: "8. 부채꼴의 넓이", ch9: "9. 원기둥의 부피"
+  };
+  let currentChapter = "ch1";
+  let mode = "sound";
+  let bookmarks = new Set();
+  let isPlaying = false;
+  let hasRecording = false;
+  let replayCount = {};
+  let dynamicChapterCount = 0;
+  let speechRate = 1.0;
+  let fontZoom = 1.0;
+
+  const toast = document.getElementById("toast");
+  const modeIndicator = document.getElementById("modeIndicator");
+  const nowPlaying = document.getElementById("nowPlaying");
+  const playBtn = document.getElementById("playBtn");
+
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add("show");
+    setTimeout(() => toast.classList.remove("show"), 1400);
+  }
+
+  function vibrate(pattern) {
+    if ((mode === "vibe" || mode === "both") && navigator.vibrate) {
+      navigator.vibrate(pattern);
+    }
+  }
+
+  function stopSpeaking() {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+  }
+
+  function speak(text) {
+    if (mode === "vibe") return;
+    if (!('speechSynthesis' in window)) {
+      showToast("이 기기는 음성 재생을 지원하지 않아요");
+      return;
+    }
+    stopSpeaking();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "ko-KR";
+    u.rate = speechRate;
+    window.speechSynthesis.speak(u);
+  }
+
+  function playEarcon(id) {
+    if (mode === "vibe") return;
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const idx = chapters.indexOf(id);
+      let freq = 440 + (idx % 5) * 60;
+      if (id === "ch4") freq = 720;
+      if (id === "ch5") freq = 300;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } catch (e) {}
+  }
+
+  function openDetailView() {
+    document.getElementById("content").classList.add("open");
+    document.getElementById("backToListBtn").style.display = "inline-block";
+    document.querySelector(".toc.grid-cards").style.display = "none";
+  }
+
+  function closeDetailView() {
+    document.getElementById("content").classList.remove("open");
+    document.getElementById("backToListBtn").style.display = "none";
+    document.querySelector(".toc.grid-cards").style.display = "grid";
+  }
+
+  function setCurrentChapter(id, opts = {}) {
+    currentChapter = id;
+    document.querySelectorAll("section.chapter").forEach(s => s.classList.remove("current"));
+    document.getElementById(id).classList.add("current");
+    document.querySelectorAll(".toc button").forEach(b => {
+      b.setAttribute("aria-current", b.dataset.target === id ? "true" : "false");
+    });
+    nowPlaying.textContent = titles[id];
+    if (!opts.silent) {
+      openDetailView();
+      vibrate(20);
+      playEarcon(id);
+      const el = document.getElementById(id);
+      el.focus({ preventScroll: false });
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  function playChapter(id) {
+    setCurrentChapter(id);
+    replayCount[id] = (replayCount[id] || 0) + 1;
+
+    if (id === "ch5") {
+      if (hasRecording) {
+        showToast("사람이 녹음한 원문 발음 재생 중 (시뮬레이션)");
+        speak("불휘 기픈 남ᄀᆞᆫ ᄇᆞᄅᆞ매 아니 뮐ᄊᆡ 라는 원문을, 국어 선생님이 녹음한 정확한 발음으로 들려드립니다.");
+      } else {
+        showToast("녹음이 없어 현대어 풀이로 대신 재생함");
+        const paraphrase = document.getElementById("ch5-text").textContent.replace(/[()]/g, "").replace("현대어 풀이: ", "");
+        speak(paraphrase);
+      }
+    } else if (id === "ch4") {
+      const formula = document.getElementById("ch4-formula").textContent;
+      const spoken = mathToSpeech(formula);
+      document.getElementById("ch4-text").textContent = spoken;
+      speak(spoken);
+    } else if (id === "ch6") {
+      speak("반지름이 커질수록 원의 넓이는 점점 더 빠르게 늘어나요. 처음엔 완만하게 올라가다가, 오른쪽으로 갈수록 곡선이 가파르게 휘어져요. 아래 사각형에 손가락을 대고 곡선을 따라가 보세요.");
+    } else {
+      const text = document.getElementById(id + "-text").textContent;
+      speak(text);
+    }
+
+    isPlaying = true;
+    playBtn.textContent = "⏸";
+    playBtn.setAttribute("aria-label", "일시정지");
+    vibrate([15, 40, 15]);
+
+    if (replayCount[id] === 3) {
+      setTimeout(async () => {
+        showToast("여러 번 다시 들으셨네요. 더 쉽게 설명해드릴게요");
+        vibrate([10, 30, 10, 30, 10]);
+        const contextText = document.getElementById(id + "-text")
+          ? document.getElementById(id + "-text").textContent : "";
+        try {
+          const easier = await callClaude(
+            "너는 시각장애 학생을 돕는 과외 선생님이야. 학생이 이 내용을 세 번이나 다시 들었어. 원래보다 훨씬 쉬운 말과 짧은 비유를 써서, 2문장 이내로 다시 설명해줘.",
+            `단원: ${titles[id]}\n내용: ${contextText}`
+          );
+          if (easier) speak(easier);
+        } catch (e) {}
+      }, 4500);
+    }
+  }
+
+  function addChapterFromText(label, text) {
+    dynamicChapterCount++;
+    const id = "custom" + dynamicChapterCount;
+    const title = `📷 ${label} ${dynamicChapterCount}`;
+    chapters.push(id);
+    titles[id] = title;
+
+    const tocBtn = document.createElement("button");
+    tocBtn.dataset.target = id;
+    tocBtn.setAttribute("aria-current", "false");
+    tocBtn.textContent = title;
+    tocBtn.addEventListener("click", () => setCurrentChapter(id));
+    document.querySelector(".toc").appendChild(tocBtn);
+
+    const section = document.createElement("section");
+    section.className = "chapter";
+    section.id = id;
+    section.tabIndex = -1;
+    section.innerHTML = `
+      <span class="eyebrow">촬영으로 추가됨</span>
+      <h2>${title}</h2>
+      <p id="${id}-text"></p>
+      <div class="row-actions">
+        <button class="icon-btn play-this" data-target="${id}">▶ 이 부분 듣기</button>
+        <button class="icon-btn bookmark-btn" data-target="${id}" aria-pressed="false">☆ 북마크</button>
+      </div>
+    `;
+    document.getElementById("content").appendChild(section);
+    document.getElementById(id + "-text").textContent = text;
+    renderTocCard(tocBtn);
+
+    section.querySelector(".play-this").addEventListener("click", () => playChapter(id));
+    section.querySelector(".bookmark-btn").addEventListener("click", (e) => toggleBookmark(id, e.currentTarget));
+
+    setCurrentChapter(id);
+    vibrate([15, 40, 15, 40, 15]);
+  }
+
+  function toggleBookmark(id, btn) {
+    const pressed = btn.getAttribute("aria-pressed") === "true";
+    if (pressed) {
+      bookmarks.delete(id);
+      btn.setAttribute("aria-pressed", "false");
+      btn.textContent = "☆ 북마크";
+      showToast("북마크 해제됨");
+    } else {
+      bookmarks.add(id);
+      btn.setAttribute("aria-pressed", "true");
+      btn.textContent = "★ 북마크됨";
+      showToast(titles[id] + " 북마크됨");
+    }
+    vibrate(mode === "sound" ? [] : [10, 30, 10, 30, 10]);
+  }
+
+  function getPreviewFor(id) {
+    const manual = {
+      ch4: "수식을 낭독 순서 문장으로 자동 변환해서 들려줘요",
+      ch6: "손가락으로 그래프를 만져서 진동으로 탐색해요",
+    };
+    if (manual[id]) return manual[id];
+    const el = document.getElementById(id + "-text") || document.getElementById(id + "-original");
+    if (el && el.textContent.trim()) {
+      const t = el.textContent.trim();
+      return t.length > 40 ? t.slice(0, 40) + "…" : t;
+    }
+    return "";
+  }
+
+  function renderTocCard(btn) {
+    const id = btn.dataset.target;
+    const title = titles[id] || btn.textContent;
+    btn.innerHTML = `<span class="card-title">${title}</span><span class="card-preview">${getPreviewFor(id)}</span>`;
+  }
+
+  document.querySelectorAll(".toc button").forEach(btn => {
+    renderTocCard(btn);
+    btn.addEventListener("click", () => setCurrentChapter(btn.dataset.target));
+  });
+
+  document.getElementById("backToListBtn").addEventListener("click", () => {
+    closeDetailView();
+    vibrate(15);
+  });
+
+  document.querySelectorAll(".play-this").forEach(btn => {
+    btn.addEventListener("click", () => playChapter(btn.dataset.target));
+  });
+
+  document.querySelectorAll(".bookmark-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.target;
+      const pressed = btn.getAttribute("aria-pressed") === "true";
+      if (pressed) {
+        bookmarks.delete(id);
+        btn.setAttribute("aria-pressed", "false");
+        btn.textContent = "☆ 북마크";
+        showToast("북마크 해제됨");
+      } else {
+        bookmarks.add(id);
+        btn.setAttribute("aria-pressed", "true");
+        btn.textContent = "★ 북마크됨";
+        showToast(titles[id] + " 북마크됨");
+      }
+      vibrate(mode === "sound" ? [] : [10, 30, 10, 30, 10]);
+    });
+  });
+
+  playBtn.addEventListener("click", () => {
+    if (isPlaying) {
+      stopSpeaking();
+      isPlaying = false;
+      playBtn.textContent = "▶";
+      playBtn.setAttribute("aria-label", "재생");
+    } else {
+      playChapter(currentChapter);
+    }
+  });
+
+  document.getElementById("prevBtn").addEventListener("click", () => {
+    const i = chapters.indexOf(currentChapter);
+    const next = chapters[(i - 1 + chapters.length) % chapters.length];
+    playChapter(next);
+  });
+
+  document.getElementById("nextBtn").addEventListener("click", () => {
+    const i = chapters.indexOf(currentChapter);
+    const next = chapters[(i + 1) % chapters.length];
+    playChapter(next);
+  });
+
+  document.getElementById("bookmarkJump").addEventListener("click", () => {
+    if (bookmarks.size === 0) {
+      showToast("북마크한 곳이 없어요");
+      vibrate(200);
+      return;
+    }
+    const first = [...bookmarks][0];
+    setCurrentChapter(first);
+    showToast(titles[first] + "(으)로 이동");
+  });
+
+  const jumpMap = { "원의 뜻": "ch1", "원의 넓이": "ch2", "연습": "ch3", "문제": "ch3", "넓이": "ch2" };
+  document.getElementById("jumpBtn").addEventListener("click", doJump);
+  document.getElementById("jumpInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") doJump();
+  });
+  function doJump() {
+    const q = document.getElementById("jumpInput").value.trim();
+    let found = null;
+    Object.keys(jumpMap).forEach(k => { if (q.includes(k)) found = jumpMap[k]; });
+    if (found) {
+      setCurrentChapter(found);
+      showToast(titles[found] + "(으)로 이동했어요");
+    } else {
+      showToast("찾는 내용이 없어요");
+      vibrate(200);
+    }
+  }
+
+  document.querySelectorAll(".seg button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", "false"));
+      btn.setAttribute("aria-pressed", "true");
+      mode = btn.dataset.mode;
+      modeIndicator.textContent = btn.textContent;
+      showToast(btn.textContent + " 모드로 변경됨");
+      vibrate(30);
+    });
+  });
+
+  const fileCaptureBtn = document.getElementById("fileCaptureBtn");
+  const fileCaptureInput = document.getElementById("fileCaptureInput");
+
+  fileCaptureBtn.addEventListener("click", () => fileCaptureInput.click());
+
+  fileCaptureInput.addEventListener("change", async () => {
+    const file = fileCaptureInput.files[0];
+    if (!file) return;
+
+    guideLine.textContent = "글자를 읽는 중... (몇 초 걸릴 수 있어요)";
+    speak("글자를 읽는 중이에요. 잠시만 기다려 주세요.");
+    vibrate(20);
+
+    try {
+      const { data: { text } } = await Tesseract.recognize(file, "kor+eng");
+      const cleaned = text.replace(/\n{2,}/g, "\n").trim();
+      ocrResultText.value = cleaned || "";
+      ocrResultBox.style.display = "block";
+      if (cleaned) detectSubject(cleaned);
+      guideLine.textContent = cleaned
+        ? "글자를 인식했어요. 아래에서 확인하고 추가해 주세요."
+        : "글자를 잘 못 읽었어요. 다른 사진으로 다시 시도해 주세요.";
+      speak(cleaned ? "글자를 인식했어요. 확인 후 추가해 주세요." : "글자를 잘 못 읽었어요.");
+      vibrate([20, 40, 20, 40, 60]);
+    } catch (err) {
+      guideLine.textContent = "인식에 실패했어요. 다시 시도해 주세요.";
+      vibrate(200);
+    } finally {
+      fileCaptureInput.value = "";
+    }
+  });
+
+  const guideLine = document.getElementById("guideLine");
+  const cameraVideo = document.getElementById("cameraVideo");
+  const captureCanvas = document.getElementById("captureCanvas");
+  const cameraStartBtn = document.getElementById("cameraStartBtn");
+  const shutterBtn = document.getElementById("shutterBtn");
+  const ocrResultBox = document.getElementById("ocrResultBox");
+  const ocrResultText = document.getElementById("ocrResultText");
+  let mediaStream = null;
+
+  cameraStartBtn.addEventListener("click", async () => {
+    guideLine.textContent = "카메라를 켜는 중...";
+    speak("카메라를 켜는 중이에요");
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" }
+      });
+      cameraVideo.srcObject = mediaStream;
+      cameraVideo.style.display = "block";
+      cameraStartBtn.style.display = "none";
+      shutterBtn.style.display = "inline-block";
+      guideLine.textContent = "페이지가 화면 가운데 오도록 맞추고 촬영하기를 누르세요";
+      speak("페이지가 화면 가운데 오도록 맞추고, 촬영하기 버튼을 눌러주세요");
+      vibrate(20);
+    } catch (err) {
+      guideLine.textContent = "카메라를 켤 수 없어요. 권한을 확인해 주세요.";
+      showToast("카메라 권한이 필요해요");
+      vibrate(200);
+    }
+  });
+
+  shutterBtn.addEventListener("click", async () => {
+    guideLine.textContent = "촬영 중...";
+    vibrate([20, 40, 20]);
+
+    captureCanvas.width = cameraVideo.videoWidth;
+    captureCanvas.height = cameraVideo.videoHeight;
+    captureCanvas.getContext("2d").drawImage(cameraVideo, 0, 0);
+
+    if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+    cameraVideo.style.display = "none";
+    shutterBtn.style.display = "none";
+    cameraStartBtn.style.display = "inline-block";
+    cameraStartBtn.textContent = "다시 촬영하기";
+
+    guideLine.textContent = "글자를 읽는 중... (몇 초 걸릴 수 있어요)";
+    speak("글자를 읽는 중이에요. 잠시만 기다려 주세요.");
+
+    try {
+      const { data: { text } } = await Tesseract.recognize(captureCanvas, "kor+eng");
+      const cleaned = text.replace(/\n{2,}/g, "\n").trim();
+      ocrResultText.value = cleaned || "";
+      ocrResultBox.style.display = "block";
+      if (cleaned) detectSubject(cleaned);
+      guideLine.textContent = cleaned
+        ? "글자를 인식했어요. 아래에서 확인하고 추가해 주세요."
+        : "글자를 잘 못 읽었어요. 다시 찍거나 직접 수정해 주세요.";
+      speak(cleaned ? "글자를 인식했어요. 확인 후 추가해 주세요." : "글자를 잘 못 읽었어요. 다시 찍어 주세요.");
+      vibrate([20, 40, 20, 40, 60]);
+    } catch (err) {
+      guideLine.textContent = "인식에 실패했어요. 다시 시도해 주세요.";
+      vibrate(200);
+    }
+  });
+
+  document.getElementById("addOcrChapterBtn").addEventListener("click", () => {
+    const text = ocrResultText.value.trim();
+    if (!text) { showToast("내용이 비어있어요"); return; }
+    const label = detectedSubject ? `촬영한 내용 [${detectedSubject}]` : "촬영한 내용";
+    addChapterFromText(label, text);
+    ocrResultBox.style.display = "none";
+    ocrResultText.value = "";
+    detectedSubject = null;
+    document.getElementById("subjectBox").innerHTML = "";
+    showToast("교과서에 추가됐어요");
+  });
+
+  let detectedSubject = null;
+  const subjectBox = document.getElementById("subjectBox");
+  const SUBJECT_LIST = ["수학", "국어", "영어", "사회", "과학"];
+
+  function renderSubjectChips(current) {
+    detectedSubject = current;
+    const chips = SUBJECT_LIST.map(s =>
+      `<button type="button" class="icon-btn subject-chip" data-subject="${s}" style="${s === current ? 'background:var(--accent-dim);color:var(--accent);border-color:var(--accent);' : ''}">${s}</button>`
+    ).join(" ");
+    subjectBox.innerHTML = `AI가 분석한 과목: <strong>${current || "판단 중..."}</strong><br>
+      <span style="display:block;margin:6px 0 4px;">다른 과목인가요?</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${chips}</div>`;
+    subjectBox.querySelectorAll(".subject-chip").forEach(btn => {
+      btn.addEventListener("click", () => {
+        renderSubjectChips(btn.dataset.subject);
+        vibrate(15);
+      });
+    });
+  }
+
+  async function detectSubject(text) {
+    subjectBox.innerHTML = `<span style="color:var(--text-dim);">AI가 과목을 분석하는 중...</span>`;
+    if (!userApiKey) {
+      subjectBox.innerHTML = `<span style="color:var(--text-dim);">API 키를 넣으면 AI가 과목을 자동으로 알려드려요</span>`;
+      return;
+    }
+    try {
+      const guess = await callClaude(
+        "너는 교과서 내용을 보고 과목을 분류하는 도우미야. 아래 목록 중 하나만, 단어 하나로만 답해: 수학, 국어, 영어, 사회, 과학. 다른 말은 절대 덧붙이지 마.",
+        text
+      );
+      const found = SUBJECT_LIST.find(s => guess.includes(s)) || "기타";
+      renderSubjectChips(found);
+    } catch (e) {
+      subjectBox.innerHTML = `<span style="color:var(--text-dim);">과목 분석 실패 — 직접 골라 주세요</span>`;
+      renderSubjectChips(null);
+    }
+  }
+
+  document.getElementById("toggleRecording").addEventListener("click", () => {
+    hasRecording = !hasRecording;
+    const statusEl = document.getElementById("ch5-status");
+    statusEl.textContent = hasRecording
+      ? "지금 상태: 사람 녹음 있음 → 실제 옛 발음 녹음을 재생함"
+      : "지금 상태: 사람 녹음 없음 → 현대어 풀이를 음성으로 재생함";
+    showToast(hasRecording ? "녹음 있음으로 전환" : "녹음 없음으로 전환");
+    vibrate(30);
+  });
+
+  document.getElementById("ch4-text").textContent =
+    mathToSpeech(document.getElementById("ch4-formula").textContent);
+
+  let userApiKey = "";
+  try { userApiKey = localStorage.getItem("gemini_api_key") || ""; } catch (e) {}
+
+  const apiKeyInput = document.getElementById("apiKeyInput");
+  const apiKeyStatus = document.getElementById("apiKeyStatus");
+
+  if (userApiKey) {
+    apiKeyInput.value = userApiKey;
+    apiKeyStatus.textContent = "✅ 저장된 키를 불러왔어요. AI 튜터/퀴즈를 바로 사용할 수 있어요.";
+  }
+
+  document.getElementById("apiKeySaveBtn").addEventListener("click", () => {
+    userApiKey = apiKeyInput.value.trim().replace(/[^\x20-\x7E]/g, "");
+    if (userApiKey) {
+      try { localStorage.setItem("gemini_api_key", userApiKey); } catch (e) {}
+      apiKeyStatus.textContent = "✅ 키가 저장됐어요. 다음에 앱을 열 때도 다시 넣지 않아도 돼요.";
+      showToast("API 키 저장됨");
+      speak("API 키가 저장됐어요. 이제부터 AI 기능을 쓸 수 있어요.");
+    } else {
+      apiKeyStatus.textContent = "키가 비어있어요.";
+    }
+  });
+
+  async function callClaude(systemPrompt, userPrompt) {
+    if (!userApiKey) {
+      showToast("먼저 위에서 API 키를 입력해 주세요");
+      throw new Error("API 키 없음");
+    }
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": userApiKey
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: "user", parts: [{ text: userPrompt }] }]
+        })
+      });
+    } catch (networkErr) {
+      throw new Error("네트워크 요청 실패: " + networkErr.message);
+    }
+
+    let data;
+    try {
+      data = await response.json();
+    } catch (parseErr) {
+      throw new Error("응답 해석 실패 (status " + response.status + ")");
+    }
+
+    if (!response.ok || data.error) {
+      const msg = (data.error && data.error.message) || ("HTTP " + response.status);
+      throw new Error(msg);
+    }
+
+    const candidate = (data.candidates || [])[0];
+    if (!candidate) {
+      throw new Error("AI가 답을 생성하지 못했어요 (candidates 없음)");
+    }
+    const parts = candidate.content && candidate.content.parts ? candidate.content.parts : [];
+    const text = parts.map(p => p.text || "").join(" ").trim();
+    if (!text) {
+      throw new Error("빈 응답을 받았어요 (finishReason: " + (candidate.finishReason || "?") + ")");
+    }
+    return text;
+  }
+
+  const askBtn = document.getElementById("askBtn");
+  const askInput = document.getElementById("askInput");
+  const askStatus = document.getElementById("askStatus");
+
+  async function askTutor() {
+    const question = askInput.value.trim();
+    if (!question) {
+      showToast("궁금한 걸 입력해 주세요");
+      return;
+    }
+    const contextText = document.getElementById(currentChapter + "-text")
+      ? document.getElementById(currentChapter + "-text").textContent
+      : "";
+    const chapterTitle = titles[currentChapter] || "";
+
+    askStatus.textContent = "AI 튜터가 생각하는 중...";
+    askBtn.disabled = true;
+    vibrate(15);
+
+    try {
+      const answer = await callClaude(
+        "너는 시각장애 학생을 돕는 친절한 AI 도우미야. 학생이 지금 보고 있는 교과서 단원 정보를 참고용으로 알려줄게. 질문이 그 단원 내용과 관련 있으면 그 내용을 바탕으로 답해줘. 하지만 질문이 교과서 내용과 무관한 다른 주제(일상 질문, 다른 과목, 일반 상식 등)여도 상관없이 성심껏 답해줘 — 교과서 내용에 없다고 답을 거절하지 마. 항상 쉬운 말로 짧게(3문장 이내) 설명하고, 음성으로 들었을 때 자연스럽게 들리도록 대답해.",
+        `(참고용) 지금 학생이 보고 있는 단원: ${chapterTitle}\n(참고용) 그 단원 내용: ${contextText}\n\n학생의 질문: ${question}`
+      );
+      if (answer) {
+        askStatus.textContent = "AI 튜터: " + answer;
+        speak(answer);
+        vibrate([15, 40, 15]);
+      } else {
+        askStatus.textContent = "답변을 받지 못했어요. 다시 시도해 주세요.";
+        vibrate(200);
+      }
+    } catch (err) {
+      askStatus.textContent = "AI 튜터 연결에 실패했어요. (" + err.message + ")";
+      vibrate(200);
+    } finally {
+      askBtn.disabled = false;
+    }
+  }
+
+  askBtn.addEventListener("click", askTutor);
+  askInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") askTutor();
+  });
+
+  const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let sharedRecognition = null;
+  let activeVoiceTarget = null;
+  let pendingVoiceTarget = null;
+  let alwaysListenOn = false;
+
+  function resetMicBtn(target) {
+    if (target && target.micBtn) {
+      target.micBtn.textContent = "🎤";
+      target.micBtn.style.background = "var(--surface-2)";
+    }
+  }
+
+  function actuallyStartRecognition(target) {
+    activeVoiceTarget = target;
+    try {
+      sharedRecognition.start();
+    } catch (e) {
+      setTimeout(() => { try { sharedRecognition.start(); } catch (e2) {} }, 200);
+    }
+  }
+
+  if (SpeechRecognitionAPI) {
+    sharedRecognition = new SpeechRecognitionAPI();
+    sharedRecognition.lang = "ko-KR";
+    sharedRecognition.interimResults = false;
+    sharedRecognition.maxAlternatives = 1;
+
+    sharedRecognition.addEventListener("start", () => {
+      if (!activeVoiceTarget) return;
+      if (activeVoiceTarget.micBtn) {
+        activeVoiceTarget.micBtn.textContent = "⏺";
+        activeVoiceTarget.micBtn.style.background = "var(--danger)";
+      }
+      if (activeVoiceTarget.statusEl) activeVoiceTarget.statusEl.textContent = "듣고 있어요... 말씀해 주세요";
+      vibrate(20);
+    });
+
+    sharedRecognition.addEventListener("result", (e) => {
+      if (!activeVoiceTarget) return;
+      const resultList = e.results[e.results.length - 1];
+      const said = (resultList && resultList[0] && resultList[0].transcript || "").trim();
+      const { inputEl, statusEl, onResult } = activeVoiceTarget;
+
+      if (!said) {
+        if (statusEl) statusEl.textContent = "말씀을 못 알아들었어요. 다시 눌러서 또렷하게 말씀해 주세요.";
+        vibrate(200);
+        return;
+      }
+      if (inputEl) inputEl.value = said;
+      if (statusEl) statusEl.textContent = "인식됨: " + said;
+      vibrate([15, 30, 15]);
+      if (onResult) onResult(said);
+    });
+
+    sharedRecognition.addEventListener("error", (e) => {
+      if (activeVoiceTarget && activeVoiceTarget.statusEl && e.error !== "no-speech") {
+        activeVoiceTarget.statusEl.textContent = "음성 인식 실패 (" + e.error + "). 다시 눌러서 시도해 주세요.";
+      }
+      if (e.error !== "no-speech") vibrate(200);
+    });
+
+    sharedRecognition.addEventListener("end", () => {
+      const wasAlwaysListen = activeVoiceTarget && activeVoiceTarget.isAlwaysListen;
+      resetMicBtn(activeVoiceTarget);
+      activeVoiceTarget = null;
+
+      if (pendingVoiceTarget) {
+        const next = pendingVoiceTarget;
+        pendingVoiceTarget = null;
+        sharedRecognition.continuous = !!next.isAlwaysListen;
+        actuallyStartRecognition(next);
+      } else if (alwaysListenOn && wasAlwaysListen) {
+        actuallyStartRecognition({
+          micBtn: null, inputEl: askInput, statusEl: alwaysListenStatus,
+          onResult: () => askTutor(), isAlwaysListen: true
+        });
+      }
+    });
+  }
+
+  function startVoiceCapture(target) {
+    if (!SpeechRecognitionAPI) {
+      showToast("이 브라우저는 음성 인식을 지원하지 않아요");
+      return;
+    }
+    if (activeVoiceTarget) {
+      pendingVoiceTarget = target;
+      try { sharedRecognition.stop(); } catch (e) {}
+    } else {
+      sharedRecognition.continuous = !!target.isAlwaysListen;
+      actuallyStartRecognition(target);
+    }
+  }
+
+  function setupVoiceInput(micBtn, inputEl, statusEl, onResult) {
+    if (!SpeechRecognitionAPI) {
+      micBtn.addEventListener("click", () => {
+        showToast("이 브라우저는 음성 인식을 지원하지 않아요");
+        vibrate(200);
+      });
+      return;
+    }
+    micBtn.addEventListener("click", () => {
+      if (activeVoiceTarget && activeVoiceTarget.micBtn === micBtn) {
+        try { sharedRecognition.stop(); } catch (e) {}
+        return;
+      }
+      startVoiceCapture({ micBtn, inputEl, statusEl, onResult });
+    });
+  }
+
+  setupVoiceInput(
+    document.getElementById("askMicBtn"), askInput, askStatus,
+    () => askTutor()
+  );
+
+  setupVoiceInput(
+    document.getElementById("jumpMicBtn"), document.getElementById("jumpInput"), null,
+    () => doJump()
+  );
+
+  setupVoiceInput(
+    document.getElementById("quizMicBtn"), document.getElementById("quizAnswerInput"), document.getElementById("quizFeedback"),
+    () => checkQuizAnswer()
+  );
+
+  setupVoiceInput(
+    document.getElementById("ch3MicBtn"), document.getElementById("ch3AnswerInput"), document.getElementById("ch3Feedback"),
+    () => checkCh3Answer()
+  );
+
+  async function checkCh3Answer() {
+    const ans = document.getElementById("ch3AnswerInput").value.trim();
+    const fb = document.getElementById("ch3Feedback");
+    if (!ans) { showToast("답을 입력하거나 말씀해 주세요"); return; }
+    fb.textContent = "채점하는 중...";
+    try {
+      const feedback = await callClaude(
+        "너는 친절한 수학 선생님이야. 학생이 '반지름이 10센티미터인 원의 넓이 구하기' 문제의 풀이 과정을 말로 설명했어. 정답은 314제곱센티미터(10×10×3.14)야. 학생의 설명이 맞는 방향인지 판단해서 2문장 이내로 다정하게 피드백해줘.",
+        "학생의 풀이 과정: " + ans
+      );
+      fb.textContent = feedback;
+      speak(feedback);
+      vibrate([15, 40, 15]);
+    } catch (e) {
+      fb.textContent = "채점에 실패했어요. (" + e.message + ")";
+      vibrate(200);
+    }
+  }
+  document.getElementById("ch3CheckBtn").addEventListener("click", checkCh3Answer);
+  document.getElementById("ch3AnswerInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") checkCh3Answer();
+  });
+
+  document.getElementById("fontIncreaseBtn").addEventListener("click", () => {
+    fontZoom = Math.min(fontZoom + 0.1, 1.8);
+    document.body.style.zoom = fontZoom;
+    vibrate(15);
+  });
+  document.getElementById("fontDecreaseBtn").addEventListener("click", () => {
+    fontZoom = Math.max(fontZoom - 0.1, 0.8);
+    document.body.style.zoom = fontZoom;
+    vibrate(15);
+  });
+
+  const contrastBtn = document.getElementById("contrastToggleBtn");
+  contrastBtn.addEventListener("click", () => {
+    const on = document.body.classList.toggle("high-contrast");
+    contrastBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    showToast(on ? "고대비 모드 켜짐" : "고대비 모드 꺼짐");
+    vibrate(20);
+  });
+
+  document.getElementById("rateSlider").addEventListener("input", (e) => {
+    speechRate = parseFloat(e.target.value);
+  });
+
+  const alwaysListenBtn = document.getElementById("alwaysListenBtn");
+  const alwaysListenStatus = document.getElementById("alwaysListenStatus");
+
+  alwaysListenBtn.addEventListener("click", () => {
+    if (!SpeechRecognitionAPI) {
+      showToast("이 브라우저는 음성 인식을 지원하지 않아요");
+      return;
+    }
+    alwaysListenOn = !alwaysListenOn;
+    alwaysListenBtn.setAttribute("aria-pressed", alwaysListenOn ? "true" : "false");
+    alwaysListenBtn.textContent = alwaysListenOn ? "🎙 항상 듣기: 켜짐" : "🎙 항상 듣기: 꺼짐";
+    if (alwaysListenOn) {
+      sharedRecognition.continuous = true;
+      startVoiceCapture({
+        micBtn: null, inputEl: askInput, statusEl: alwaysListenStatus,
+        onResult: () => askTutor(), isAlwaysListen: true
+      });
+      alwaysListenStatus.textContent = "항상 듣기 모드 켜짐 — 아무 때나 말하면 자동으로 질문으로 인식돼요";
+      showToast("항상 듣기 모드 켜짐");
+    } else {
+      sharedRecognition.continuous = false;
+      try { sharedRecognition.stop(); } catch (e) {}
+      activeVoiceTarget = null;
+      alwaysListenStatus.textContent = "";
+      showToast("항상 듣기 모드 꺼짐");
+    }
+    vibrate(20);
+  });
+
+  const micTestStatus = document.getElementById("micTestStatus");
+  const micVolumeTestBtn = document.getElementById("micVolumeTestBtn");
+  const micEchoTestBtn = document.getElementById("micEchoTestBtn");
+
+  let micTestStream = null;
+  let micTestAudioCtx = null;
+  let micTestRAF = null;
+
+  async function startVolumeTest() {
+    try {
+      micTestStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      micTestStatus.textContent = "마이크에 접근할 수 없어요. 브라우저의 마이크 권한을 확인해 주세요.";
+      speak("마이크에 접근할 수 없어요. 마이크 권한을 확인해 주세요.");
+      vibrate(200);
+      return;
+    }
+    micTestAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = micTestAudioCtx.createMediaStreamSource(micTestStream);
+    const analyser = micTestAudioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    micVolumeTestBtn.textContent = "⏹ 소리 감지 테스트 종료";
+    micTestStatus.textContent = "테스트 중이에요. 평소 말하는 크기로 말씀해 보세요.";
+    speak("소리 감지 테스트를 시작해요. 평소처럼 말씀해 보세요.");
+
+    let lastFeedback = 0;
+    function tick() {
+      analyser.getByteTimeDomainData(data);
+      let sumSquares = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sumSquares += v * v;
+      }
+      const rms = Math.sqrt(sumSquares / data.length);
+      const now = Date.now();
+      if (rms > 0.02 && now - lastFeedback > 250) {
+        lastFeedback = now;
+        const strong = rms > 0.15, mid = rms > 0.06;
+        vibrate(strong ? 45 : mid ? 20 : 8);
+        micTestStatus.textContent = strong ? "소리가 잘 들려요 (크게 감지됨)"
+          : mid ? "소리가 감지되고 있어요 (적당히)"
+          : "아주 작게 감지되고 있어요 — 마이크에 조금 더 가까이서 말해 보세요";
+      }
+      micTestRAF = requestAnimationFrame(tick);
+    }
+    tick();
+  }
+
+  function stopVolumeTest() {
+    if (micTestRAF) cancelAnimationFrame(micTestRAF);
+    if (micTestStream) micTestStream.getTracks().forEach(t => t.stop());
+    if (micTestAudioCtx) { try { micTestAudioCtx.close(); } catch (e) {} }
+    micTestStream = null; micTestAudioCtx = null; micTestRAF = null;
+    micVolumeTestBtn.textContent = "① 소리가 감지되는지 확인";
+    micTestStatus.textContent = "소리 감지 테스트를 종료했어요.";
+    speak("테스트를 종료했어요.");
+  }
+
+  micVolumeTestBtn.addEventListener("click", () => {
+    if (micTestStream) stopVolumeTest(); else startVolumeTest();
+  });
+
+  micEchoTestBtn.addEventListener("click", () => {
+    if (!SpeechRecognitionAPI) {
+      showToast("이 브라우저는 음성 인식을 지원하지 않아요");
+      return;
+    }
+    micTestStatus.textContent = "듣고 있어요, 아무 문장이나 말씀해 보세요.";
+    speak("듣고 있어요. 아무 문장이나 말씀해 보세요.");
+    startVoiceCapture({
+      micBtn: micEchoTestBtn,
+      inputEl: { value: "" },
+      statusEl: null,
+      onResult: (said) => {
+        micTestStatus.textContent = "이렇게 알아들었어요: " + said;
+        speak("이렇게 알아들었어요: " + said);
+      }
+    });
+  });
+
+  const quizStartBtn = document.getElementById("quizStartBtn");
+  const quizQuestionBox = document.getElementById("quizQuestionBox");
+  const quizAnswerRow = document.getElementById("quizAnswerRow");
+  const quizAnswerInput = document.getElementById("quizAnswerInput");
+  const quizCheckBtn = document.getElementById("quizCheckBtn");
+  const quizFeedback = document.getElementById("quizFeedback");
+  let currentQuizQuestion = null;
+
+  quizStartBtn.addEventListener("click", async () => {
+    const contextText = document.getElementById(currentChapter + "-text")
+      ? document.getElementById(currentChapter + "-text").textContent : "";
+    quizQuestionBox.textContent = "퀴즈를 만드는 중...";
+    quizFeedback.textContent = "";
+    quizAnswerRow.style.display = "none";
+    quizStartBtn.disabled = true;
+    try {
+      const question = await callClaude(
+        "너는 퀴즈 출제자야. 주어진 교과서 내용을 바탕으로, 학생이 이해했는지 확인할 수 있는 짧은 질문을 딱 하나만 만들어. 질문만 출력하고, 정답은 절대 알려주지 마.",
+        `단원: ${titles[currentChapter]}\n내용: ${contextText}`
+      );
+      currentQuizQuestion = question;
+      quizQuestionBox.textContent = "Q. " + question;
+      speak(question);
+      quizAnswerRow.style.display = "flex";
+      vibrate([15, 40, 15]);
+    } catch (e) {
+      quizQuestionBox.textContent = "퀴즈를 만들지 못했어요. (" + e.message + ")";
+      vibrate(200);
+    } finally {
+      quizStartBtn.disabled = false;
+    }
+  });
+
+  async function checkQuizAnswer() {
+    const studentAnswer = quizAnswerInput.value.trim();
+    if (!studentAnswer || !currentQuizQuestion) {
+      showToast("답을 입력해 주세요");
+      return;
+    }
+    quizFeedback.textContent = "채점하는 중...";
+    quizCheckBtn.disabled = true;
+    try {
+      const feedback = await callClaude(
+        "너는 친절한 채점자야. 문제와 학생의 답을 보고 맞았는지 판단해서, 2문장 이내로 다정하게 알려줘. 틀렸으면 정답도 짧게 알려줘.",
+        `문제: ${currentQuizQuestion}\n학생의 답: ${studentAnswer}`
+      );
+      quizFeedback.textContent = feedback;
+      speak(feedback);
+      vibrate([15, 40, 15]);
+    } catch (e) {
+      quizFeedback.textContent = "채점에 실패했어요. (" + e.message + ")";
+      vibrate(200);
+    } finally {
+      quizCheckBtn.disabled = false;
+    }
+  }
+  quizCheckBtn.addEventListener("click", checkQuizAnswer);
+  quizAnswerInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") checkQuizAnswer();
+  });
+
+  const graphCanvas = document.getElementById("graphCanvas");
+  const graphCtx = graphCanvas.getContext("2d");
+  const graphStatus = document.getElementById("graphStatus");
+  const W = graphCanvas.width, H = graphCanvas.height;
+  const padding = 30;
+
+  function graphValue(rNorm) {
+    return rNorm * rNorm;
+  }
+  function toScreenY(valueNorm) {
+    return H - padding - valueNorm * (H - padding * 2);
+  }
+  function toScreenX(rNorm) {
+    return padding + rNorm * (W - padding * 2);
+  }
+
+  function drawGraph() {
+    graphCtx.clearRect(0, 0, W, H);
+    graphCtx.strokeStyle = "#444a55";
+    graphCtx.lineWidth = 2;
+    graphCtx.beginPath();
+    graphCtx.moveTo(padding, padding * 0.3);
+    graphCtx.lineTo(padding, H - padding);
+    graphCtx.lineTo(W - padding * 0.3, H - padding);
+    graphCtx.stroke();
+
+    graphCtx.strokeStyle = "#5ec8a8";
+    graphCtx.lineWidth = 4;
+    graphCtx.beginPath();
+    for (let i = 0; i <= 100; i++) {
+      const rNorm = i / 100;
+      const x = toScreenX(rNorm);
+      const y = toScreenY(graphValue(rNorm));
+      if (i === 0) graphCtx.moveTo(x, y); else graphCtx.lineTo(x, y);
+    }
+    graphCtx.stroke();
+  }
+  drawGraph();
+
+  function handleGraphTouch(clientX, clientY) {
+    const rect = graphCanvas.getBoundingClientRect();
+    const x = (clientX - rect.left) * (W / rect.width);
+    const y = (clientY - rect.top) * (H / rect.height);
+
+    const rNorm = Math.min(Math.max((x - padding) / (W - padding * 2), 0), 1);
+    const curveY = toScreenY(graphValue(rNorm));
+    const distance = Math.abs(y - curveY);
+
+    if (mode !== "sound") {
+      if (distance < 8) navigator.vibrate && navigator.vibrate(45);
+      else if (distance < 20) navigator.vibrate && navigator.vibrate(20);
+      else if (distance < 40) navigator.vibrate && navigator.vibrate(6);
+      else navigator.vibrate && navigator.vibrate(0);
+    }
+
+    if (mode !== "vibe" && distance < 40) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = 300 + (40 - distance) * 8;
+        gain.gain.setValueAtTime(0.05, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime + 0.08);
+      } catch (e) {}
+    }
+
+    if (distance < 8) {
+      graphStatus.textContent = `곡선 위예요! 반지름 비율 약 ${Math.round(rNorm * 100)}%`;
+    } else {
+      graphStatus.textContent = "곡선을 찾는 중... 손가락을 위아래로 움직여 보세요";
+    }
+  }
+
+  graphCanvas.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    const t = e.touches[0];
+    if (t) handleGraphTouch(t.clientX, t.clientY);
+  }, { passive: false });
+  graphCanvas.addEventListener("touchstart", (e) => {
+    const t = e.touches[0];
+    if (t) handleGraphTouch(t.clientX, t.clientY);
+  });
+  let mouseDown = false;
+  graphCanvas.addEventListener("mousedown", () => mouseDown = true);
+  window.addEventListener("mouseup", () => mouseDown = false);
+  graphCanvas.addEventListener("mousemove", (e) => {
+    if (mouseDown) handleGraphTouch(e.clientX, e.clientY);
+  });
+
+  document.getElementById("graphDescribeBtn").addEventListener("click", () => playChapter("ch6"));
+
+  document.getElementById("graphStepBtn").addEventListener("click", () => {
+    const steps = [0, 0.25, 0.5, 0.75, 1.0];
+    const labels = ["시작 지점", "4분의 1 지점", "절반 지점", "4분의 3 지점", "끝 지점"];
+    let i = 0;
+    function speakStep() {
+      if (i >= steps.length) {
+        speak("설명이 끝났어요. 전체적으로 처음엔 완만하게, 갈수록 점점 가파르게 올라가는 곡선이에요.");
+        return;
+      }
+      const heightPercent = Math.round(graphValue(steps[i]) * 100);
+      speak(`${labels[i]}, 반지름 비율 ${Math.round(steps[i] * 100)}퍼센트일 때, 넓이는 최대치의 약 ${heightPercent}퍼센트예요.`);
+      graphStatus.textContent = `${labels[i]} — 넓이 약 ${heightPercent}%`;
+      i++;
+      setTimeout(speakStep, 3200);
+    }
+    speakStep();
+  });
+
+  setCurrentChapter("ch1", { silent: true });
+})();
+</script>
+</body>
+</html>
