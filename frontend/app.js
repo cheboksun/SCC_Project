@@ -961,6 +961,13 @@ const SPECIAL_BY_SLUG = {
   function handleAlwaysListenTranscript(transcript) {
     const said = (transcript || "").trim();
     if (!said) return;
+    // "사용법"/"도움말"만 짧게 말하면 AI 튜터 질문이 아니라 앱 안내를 여는 명령으로 처리한다.
+    // ("분수 사용법 알려줘" 같은 공부 질문까지 가로채지 않도록 앞에 다른 말이 붙으면 튜터로 보낸다.)
+    if (/^(앱|이앱)?(사용법|도움말)(알려줘|읽어줘|들려줘|보여줘)?(요)?[.?!]?$/.test(said.replace(/\s/g, ""))) {
+      alwaysListenStatus.textContent = "인식됨: " + said;
+      openHelp({ speakIt: true });
+      return;
+    }
     askInput.value = said;
     alwaysListenStatus.textContent = "인식됨: " + said;
     vibrate([15, 30, 15]);
@@ -1972,6 +1979,53 @@ const SPECIAL_BY_SLUG = {
     b.setAttribute("aria-pressed", active ? "true" : "false");
     if (active) modeIndicator.textContent = b.textContent;
   });
+
+  // ---- 사용법 안내 ----
+  const helpBtn = $("helpBtn");
+  const helpPanel = $("helpPanel");
+
+  function helpSpeechText() {
+    // 이모지·기호는 TTS가 "물음표" 등으로 읽어버리므로 빼고 글자만 읽는다.
+    const items = [...helpPanel.querySelectorAll(".help-list li")].map((li, i) => {
+      const title = li.querySelector("strong").textContent;
+      const body = li.querySelector("span").textContent;
+      return `${i + 1}. ${title}. ${body}`;
+    });
+    return ("사용법을 알려드릴게요. " + items.join(" "))
+      .replace(/[\p{Extended_Pictographic}☀-➿️①②⏮⏭▶★⚠]/gu, "")
+      .replace(/\s+/g, " ");
+  }
+
+  function openHelp({ speakIt = false } = {}) {
+    helpPanel.hidden = false;
+    helpBtn.setAttribute("aria-expanded", "true");
+    helpPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    $("helpTitle").focus({ preventScroll: true });
+    vibrate(15);
+    if (speakIt) speak(helpSpeechText());
+  }
+
+  function closeHelp() {
+    helpPanel.hidden = true;
+    helpBtn.setAttribute("aria-expanded", "false");
+    stopSpeaking();
+    helpBtn.focus();
+    vibrate(15);
+  }
+
+  helpBtn.addEventListener("click", () => (helpPanel.hidden ? openHelp() : closeHelp()));
+  $("helpCloseBtn").addEventListener("click", closeHelp);
+  $("helpSpeakBtn").addEventListener("click", () => speak(helpSpeechText()));
+
+  // 처음 온 사람에게는 한 번 자동으로 펼쳐 준다. 서버가 깨어나는 동안에도 읽을 수 있다.
+  // 음성 자동 재생은 브라우저가 막으므로 여기서는 화면만 열어 둔다.
+  try {
+    if (!localStorage.getItem("voxbook_help_seen")) {
+      helpPanel.hidden = false;
+      helpBtn.setAttribute("aria-expanded", "true");
+      localStorage.setItem("voxbook_help_seen", "1");
+    }
+  } catch (e) {}
 
   // ---- 앱 초기화: 챕터/북마크 불러오기 ----
   async function initApp() {
