@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
 <title>같이보는 교과서</title>
 <link rel="stylesheet" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=20260928b">
 </head>
 <body>
 
@@ -21,8 +21,41 @@
   </div>
   <div class="header-actions">
     <span class="status-pill" id="modeIndicator">소리+진동</span>
+    <button class="help-btn" id="helpBtn" aria-expanded="false" aria-controls="helpPanel">❓ 사용법</button>
   </div>
 </header>
+
+<!-- 서버(무료 호스팅)가 잠들어 있을 때 깨어나는 동안 보여주는 안내 -->
+<div class="panel loading-banner" id="loadingBanner" role="status" aria-live="polite" hidden>
+  <div class="spinner" aria-hidden="true"></div>
+  <p id="loadingText">서버를 깨우는 중이에요. 처음 접속하면 최대 1분쯤 걸릴 수 있어요.</p>
+  <button class="icon-btn" id="loadingRetryBtn" hidden>다시 시도</button>
+</div>
+
+<!-- 사용법: 서버를 기다리는 동안에도 읽을 수 있도록 메인 화면 밖에 둔다 -->
+<section class="panel help-panel" id="helpPanel" aria-labelledby="helpTitle" hidden>
+  <h2 class="title" id="helpTitle" tabindex="-1">❓ 사용법</h2>
+  <ol class="help-list">
+    <li><strong>화면·음성 설정</strong>
+      <span>가-/가+ 버튼으로 글자 크기를, 고대비 버튼으로 화면 색을, 읽는 속도 막대로 음성 빠르기를 바꿔요. 🎙 항상 듣기를 켜 두면 말만 해도 AI 튜터에게 질문이 가요.</span></li>
+    <li><strong>페이지 찍기</strong>
+      <span>"카메라 켜기" 또는 "📱 사진 앱으로 찍기"를 눌러 교과서를 찍어요. 카메라가 켜져 있을 때는 "찍어줘"라고 말해도 찍혀요. 인식된 글을 듣고 "✅ 교과서에 이 내용 추가하기"를 누르면 저장돼요.</span></li>
+    <li><strong>교과서 만들기</strong>
+      <span>"여러 페이지 넣기"에서 PDF나 사진 여러 장을 넣으면 한 권의 교과서로 만들어져요. "📖 교과서 목차 열기"로 책과 단원을 볼 수 있고, ⚠ 확인이 필요한 항목도 모아 볼 수 있어요.</span></li>
+    <li><strong>단원 찾고 듣기</strong>
+      <span>검색창에 단원 이름을 쓰고 "이동"을 눌러요. 🎤 버튼을 누르고 말해도 돼요. 화면 아래 버튼으로 ⏮ 이전 단원, ▶ 재생, ⏭ 다음 단원, ★ 북마크한 곳으로 이동해요. "읽어주는 방식"에서 소리, 진동을 고를 수 있어요.</span></li>
+    <li><strong>공부 도우미</strong>
+      <span>🤖 AI 튜터에게 궁금한 것을 물어보고, 🧠 퀴즈로 이해했는지 확인해요. 📊 학습 리포트는 보호자와 선생님이 공부 기록을 볼 때 써요.</span></li>
+    <li><strong>마이크가 안 될 때</strong>
+      <span>🎤 마이크 테스트에서 ①, ② 버튼을 차례로 눌러 확인해요. 음성 인식은 크롬이나 엣지 브라우저에서 가장 잘 돼요.</span></li>
+    <li><strong>음성으로 사용법 듣기</strong>
+      <span>🎙 항상 듣기를 켜고 "사용법"이라고 말하면 이 안내를 읽어줘요.</span></li>
+  </ol>
+  <div class="row-actions">
+    <button class="icon-btn" id="helpSpeakBtn">🔊 사용법 읽어주기</button>
+    <button class="icon-btn" id="helpCloseBtn">닫기</button>
+  </div>
+</section>
 
 <!-- 메인 화면 -->
 <div id="appScreen" hidden>
@@ -200,14 +233,14 @@
 
 </div><!-- /appScreen -->
 
-<script src="config.js?v=20260923a"></script>
-<script src="api.js?v=20260923a"></script>
-<script src="frameQuality.js?v=20260923a"></script>
-<script src="graphSound.js?v=20260923a"></script>
-<script src="graphTrace.js?v=20260923a"></script>
-<script src="voiceControl.js?v=20260923a"></script>
-<script type="module" src="pdfImport.js?v=20260923a"></script>
-<script src="app.js?v=20260923a"></script>
-<script src="auth.js?v=20260923a"></script>
+<script src="config.js?v=20260928b"></script>
+<script src="api.js?v=20260928b"></script>
+<script src="frameQuality.js?v=20260928b"></script>
+<script src="graphSound.js?v=20260928b"></script>
+<script src="graphTrace.js?v=20260928b"></script>
+<script src="voiceControl.js?v=20260928b"></script>
+<script type="module" src="pdfImport.js?v=20260928b"></script>
+<script src="app.js?v=20260928b"></script>
+<script src="auth.js?v=20260928b"></script>
 </body>
 </html>

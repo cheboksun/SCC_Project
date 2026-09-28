@@ -394,4 +394,36 @@ body.high-contrast .ocr-box, body.high-contrast .visual-desc {
   border: 2px solid #ffffff;
 }
 
+/* ---------- 사용법 ---------- */
+.help-btn {
+  font: inherit; font-size: 14px; font-weight: 700; white-space: nowrap;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--surface-border); border-radius: 999px;
+  padding: 7px 13px; cursor: pointer;
+}
+.help-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.help-panel .title { margin-top: 0; }
+.help-panel .title:focus { outline: none; }
+.help-list { margin: 0 0 16px; padding-left: 22px; line-height: 1.7; }
+.help-list li { margin-bottom: 12px; padding-left: 4px; }
+.help-list li::marker { color: var(--accent); font-weight: 800; }
+.help-list strong { display: block; color: var(--text); font-size: 16px; }
+.help-list span { color: var(--text-dim); font-size: 15px; }
+
+/* ---------- 서버 깨우는 중 안내 ---------- */
+.loading-banner {
+  display: flex; flex-direction: column; align-items: center; gap: var(--space-3);
+  text-align: center; padding: 32px 20px;
+}
+.loading-banner p { margin: 0; font-size: 16.5px; line-height: 1.6; color: var(--text); font-weight: 600; }
+.loading-banner .spinner {
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 4px solid var(--surface-3); border-top-color: var(--accent);
+  animation: loading-spin 0.9s linear infinite;
+}
+.loading-banner.error .spinner { display: none; }
+.loading-banner.error p { color: var(--danger); }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loading-banner .spinner { animation-duration: 3s; } }
+
 [hidden] { display: none !important; }
